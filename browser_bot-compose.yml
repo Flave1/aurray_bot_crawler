@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  browser-bot:
+    build:
+      context: ../../browser_bot
+      dockerfile: Dockerfile
+    image: clerk-browser-bot:latest
+    container_name: clerk-browser-bot-dev
+    environment:
+      # Meeting Configuration
+      - MEETING_URL=${MEETING_URL}
+      - MEETING_ID=${MEETING_ID}
+      - MEETING_PASSCODE=${MEETING_PASSCODE:-}
+      - SESSION_ID=${SESSION_ID}
+      - PLATFORM=${PLATFORM:-google_meet}
+      
+      # Bot Configuration
+      - BOT_NAME=${BOT_NAME:-Clerk AI Bot}
+      
+      # Backend URLs (updated to use production IP)
+      - RT_GATEWAY_URL=${RT_GATEWAY_URL:-ws://localhost:8000}
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8000}
+      
+      # Timeout Configuration
+      - JOIN_TIMEOUT_SEC=${JOIN_TIMEOUT_SEC:-300}
+      - NAVIGATION_TIMEOUT_MS=${NAVIGATION_TIMEOUT_MS:-45000}
+      
+      # Audio Configuration
+      - AUDIO_SAMPLE_RATE=${AUDIO_SAMPLE_RATE:-16000}
+      - AUDIO_CHANNELS=${AUDIO_CHANNELS:-1}
+      - ENABLE_AUDIO_CAPTURE=${ENABLE_AUDIO_CAPTURE:-true}
+      - ENABLE_TTS_PLAYBACK=${ENABLE_TTS_PLAYBACK:-true}
+      
+      # Browser Configuration
+      - HEADLESS=${HEADLESS:-true}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-en-US}
+      - BROWSER_ARGS=${BROWSER_ARGS:-}
+      
+      # TTS Configuration
+      - TTS_PROVIDER=${TTS_PROVIDER:-openai}
+      - TTS_API_KEY=${TTS_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-${TTS_API_KEY}}
+      - TTS_VOICE=${TTS_VOICE:-alloy}
+      - TTS_SPEED=${TTS_SPEED:-1.0}
+      - TTS_PITCH=${TTS_PITCH:-1.0}
+      - TTS_GAIN=${TTS_GAIN:-0.7}
+      
+      # Optional Configuration
+      - LLM_MOCK_URL=${LLM_MOCK_URL:-}
+      - STORAGE_STATE=${STORAGE_STATE:-}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    # Required for Playwright in Docker
+    shm_size: '2g'
+    # For audio routing and display
+    network_mode: "host" # Use host network for easier audio routing and display access
+    cap_add:
+      - SYS_ADMIN # Required for some browser operations
+    security_opt:
+      - seccomp:unconfined # Required for Chromium in some environments
+    devices:
+      - /dev/snd:/dev/snd # Expose sound devices for audio capture/playback
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix # For X server if running non-headless (optional)
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '${BOT_CONTAINER_CPU:-1.0}' # 1 CPU core
+          memory: '${BOT_CONTAINER_MEMORY:-2048M}' # 2GB RAM
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

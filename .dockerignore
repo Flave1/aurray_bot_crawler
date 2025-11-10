@@ -1,0 +1,110 @@
+# Test files
+__tests__/
+*.test.js
+*.spec.js
+*.test.ts
+*.spec.ts
+
+# Development files
+.git/
+.gitignore
+.gitattributes
+*.md
+README*
+CHANGELOG*
+LICENSE*
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+.project
+.classpath
+.settings/
+
+# Environment files (these should be passed as env vars)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# Node modules (will be installed in container)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnp
+.pnp.js
+
+# Source maps (unnecessary in production)
+*.map
+*.map.js
+
+# Build artifacts
+dist/
+build/
+*.tmp
+*.temp
+.next/
+out/
+.nuxt/
+.cache/
+
+# Docker files
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+.docker/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Scripts (development/deployment scripts, not needed in container)
+scripts/
+*.sh
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+Jenkinsfile
+
+# Coverage and testing
+coverage/
+.nyc_output/
+*.lcov
+.jest/
+
+# Misc
+*.bak
+*.orig
+*.rej
+*.patch
+.cache/
+.temp/

@@ -1,0 +1,42 @@
+{
+  "name": "clerk-browser-bot",
+  "version": "1.0.0",
+  "description": "Headless browser bot for joining meetings and streaming audio",
+  "main": "bot_entry.js",
+  "scripts": {
+    "start": "node bot_entry.js",
+    "dev": "node --inspect bot_entry.js",
+    "healthcheck": "node healthcheck.js",
+    "test": "node --test __tests__",
+    "control": "node control_server.js"
+  },
+  "keywords": [
+    "meeting",
+    "bot",
+    "automation",
+    "playwright",
+    "audio",
+    "streaming"
+  ],
+  "author": "Clerk AI Team",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "ws": "^8.14.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1",
+    "fluent-ffmpeg": "^2.1.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/clerk"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/clerk/issues"
+  },
+  "homepage": "https://github.com/your-org/clerk#readme"
+}
