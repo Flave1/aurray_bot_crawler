@@ -15,8 +15,8 @@ const path = require('path');
  */
 
 const DEFAULT_ENV = /** @type {EnvMap} */ ({
-  RT_GATEWAY_URL: 'ws://localhost:8000',
-  API_BASE_URL: 'http://localhost:8000',
+  RT_GATEWAY_URL: 'ws://44.203.236.62:8000',
+  API_BASE_URL: 'http://44.203.236.62:8000',
   SESSION_ID: '2be1ad3b-1d8a-4132-8770-4e201a62dc9d',
   MEETING_URL: 'https://teams.live.com/meet/9318960718018?p=J453ke6nEPHvg5kJGq',
   PLATFORM: 'teams',
