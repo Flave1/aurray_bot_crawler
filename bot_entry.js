@@ -1,114 +1,65 @@
 /**
  * Browser bot entry point.
- * Coordinates Playwright automation, platform-specific meeting control,
- * and audio/WebSocket plumbing for the Clerk meeting agent.
+ * Minimal browser setup with login functionality.
  */
 
-const { chromium } = require('playwright');
-const WebSocket = require('ws');
-const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
-const path = require('path');
+const { chromium } = require("playwright");
+const WebSocket = require("ws");
+const fs = require("fs");
+const path = require("path");
+const { v4: uuidv4 } = require("uuid");
+const https = require("https");
+const http = require("http");
+const { URL } = require("url");
 
-const { createPlatformController } = require('./platforms');
-const MockLLMService = require('./lib/mockLLM');
-
-const DEFAULT_BROWSER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-background-timer-throttling',
-  '--disable-backgrounding-occluded-windows',
-  '--disable-renderer-backgrounding',
-  '--disable-web-security',
-  '--disable-features=IsolateOrigins,site-per-process',
-  '--use-fake-ui-for-media-stream',
-  '--use-fake-device-for-media-stream',
-  '--autoplay-policy=no-user-gesture-required',
-  '--allow-running-insecure-content',
-  '--ignore-certificate-errors',
-  '--enable-features=NetworkService,NetworkServiceLogging',
-  '--metrics-recording-only',
-  '--force-color-profile=srgb',
-  '--password-store=basic',
-  '--use-mock-keychain',
-  '--disable-blink-features=AutomationControlled',
-  '--disable-features=VizDisplayCompositor',
-  '--disable-ipc-flooding-protection',
-  '--disable-hang-monitor',
-  '--disable-popup-blocking',
-  '--disable-prompt-on-repost',
-  '--disable-sync',
-  '--disable-translate',
-  '--disable-windows10-custom-titlebar',
-  '--disable-client-side-phishing-detection',
-  '--disable-component-extensions-with-background-pages',
-  '--disable-default-apps',
-  '--disable-extensions',
-  '--disable-plugins',
-  '--disable-plugins-discovery',
-  '--disable-preconnect',
-  '--disable-print-preview',
-  '--hide-scrollbars',
-  '--no-default-browser-check',
-  '--no-first-run',
-  '--no-pings',
-  // Prevent protocol handler dialogs (Teams app popup)
-  '--disable-protocol-handler-prompt'
-];
+const {
+  getPlatformBrowserArgs,
+  getPlatformPermissionsOrigin,
+  createPlatformController,
+} = require("./platforms");
 
 function parseBoolean(value, defaultValue) {
-  if (value === undefined || value === null || value === '') {
+  if (value === undefined || value === null || value === "") {
     return defaultValue;
   }
-  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
 const config = {
   meetingUrl: process.env.MEETING_URL,
-  botName: process.env.BOT_NAME || 'Clerk AI Bot',
-  platform: process.env.PLATFORM || 'google_meet',
-  meetingPasscode: process.env.MEETING_PASSCODE || null,
-  rtGatewayUrl: process.env.RT_GATEWAY_URL || 'ws://44.203.236.62:8000',
-  apiBaseUrl: process.env.API_BASE_URL || 'http://44.203.236.62:8000',
-  joinTimeoutSec: parseInt(process.env.JOIN_TIMEOUT_SEC, 10) || 60,
-  navigationTimeoutMs: parseInt(process.env.NAVIGATION_TIMEOUT_MS || '45000', 10),
-  audioSampleRate: parseInt(process.env.AUDIO_SAMPLE_RATE, 10) || 16000,
-  audioChannels: parseInt(process.env.AUDIO_CHANNELS, 10) || 1,
-  enableAudioCapture: parseBoolean(process.env.ENABLE_AUDIO_CAPTURE, true),
-  enableTtsPlayback: parseBoolean(process.env.ENABLE_TTS_PLAYBACK, true),
-  // TTS Configuration
-  ttsProvider: process.env.TTS_PROVIDER || 'openai', // 'openai' or 'elevenlabs'
-  ttsApiKey: process.env.TTS_API_KEY || process.env.OPENAI_API_KEY || '',
-  ttsVoice: process.env.TTS_VOICE || 'alloy', // OpenAI voice or ElevenLabs voice ID
-  ttsSpeed: parseFloat(process.env.TTS_SPEED) || 1.0,
-  ttsPitch: parseFloat(process.env.TTS_PITCH) || 1.0,
-  ttsGain: parseFloat(process.env.TTS_GAIN) || 0.7,
-  llmMockUrl: process.env.LLM_MOCK_URL || '', // Optional: mock API URL for text responses
+  botName: process.env.BOT_NAME || "Aurray Bot",
+  platform: process.env.PLATFORM || "google_meet",
   headless: parseBoolean(process.env.HEADLESS, true),
-  // Optional Playwright storage state path for pre-authenticated sessions
-  storageState: process.env.STORAGE_STATE || '',
-  browserLocale: process.env.BROWSER_LOCALE || 'en-US',
-  browserArgs: (process.env.BROWSER_ARGS ? process.env.BROWSER_ARGS.split(',').map((arg) => arg.trim()).filter(Boolean) : [])
-    .concat(DEFAULT_BROWSER_ARGS),
-  meetingCheckIntervalMs: parseInt(process.env.MEETING_CHECK_INTERVAL_MS || '4000', 10),
-  meetingPresenceGraceMs: parseInt(process.env.MEETING_PRESENCE_GRACE_MS || '20000', 10),
-  logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
-  meetingId: process.env.MEETING_ID || uuidv4(),
+  browserEngine: (process.env.BROWSER_ENGINE || "chromium").toLowerCase(),
+  browserLocale: process.env.BROWSER_LOCALE || "en-US",
+  browserArgs: process.env.BROWSER_ARGS
+    ? process.env.BROWSER_ARGS.split(",")
+        .map((arg) => arg.trim())
+        .filter(Boolean)
+    : [],
+  navigationTimeoutMs: parseInt(
+    process.env.NAVIGATION_TIMEOUT_MS || "45000",
+    10
+  ),
+  logLevel: (process.env.LOG_LEVEL || "info").toLowerCase(),
+  rtGatewayUrl: process.env.RT_GATEWAY_URL || "ws://localhost:8000",
   sessionId: process.env.SESSION_ID || uuidv4(),
-  enableBrowserUseAssist: parseBoolean(process.env.BROWSER_USE_ASSIST, false)
+  apiBaseUrl: process.env.API_BASE_URL || "http://localhost:8000",
+  isOrganizer: parseBoolean(process.env.IS_ORGANIZER, false),
 };
 
-const LOG_LEVEL_WEIGHT = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  debug: 3
-};
+const fakeWavPath = path.resolve(__dirname, 'fake.wav');
+const fakeY4mPath = path.resolve(__dirname, 'fake.y4m');
+const DEFAULT_BROWSER_ARGS = [
+  "--autoplay-policy=no-user-gesture-required",
+  "--use-fake-ui-for-media-stream",
+  "--use-fake-device-for-media-stream",
+  `--use-file-for-fake-audio-capture=${fakeWavPath}`,
+  `--use-file-for-fake-video-capture=${fakeY4mPath}`,
+];
 
 class StructuredLogger {
-  constructor(level = 'info', context = {}) {
+  constructor(level = "info", context = {}) {
     this.level = level;
     this.context = context;
   }
@@ -117,1948 +68,2032 @@ class StructuredLogger {
     return new StructuredLogger(this.level, { ...this.context, ...extra });
   }
 
-  shouldLog(level) {
-    const desired = LOG_LEVEL_WEIGHT[level];
-    const current = LOG_LEVEL_WEIGHT[this.level] ?? LOG_LEVEL_WEIGHT.info;
-    return desired <= current;
-  }
-
-  formatContext(additional = {}) {
-    const payload = { ...this.context, ...additional };
-    return Object.keys(payload).length ? payload : undefined;
-  }
-
   info(message, meta = {}) {
-    if (this.shouldLog('info')) {
-      console.log(`[INFO] ${message}`, this.formatContext(meta) || '');
-    }
+    console.log(`[INFO] ${message}`, Object.keys(meta).length ? meta : "");
   }
 
   warn(message, meta = {}) {
-    if (this.shouldLog('warn')) {
-      console.warn(`[WARN] ${message}`, this.formatContext(meta) || '');
-    }
+    console.warn(`[WARN] ${message}`, Object.keys(meta).length ? meta : "");
   }
 
   error(message, meta = {}) {
-    if (this.shouldLog('error')) {
-      console.error(`[ERROR] ${message}`, this.formatContext(meta) || '');
-    }
+    console.error(`[ERROR] ${message}`, Object.keys(meta).length ? meta : "");
   }
 
   debug(message, meta = {}) {
-    if (this.shouldLog('debug')) {
-      console.log(`[DEBUG] ${message}`, this.formatContext(meta) || '');
+    if (config.logLevel === "debug") {
+      console.log(`[DEBUG] ${message}`, Object.keys(meta).length ? meta : "");
     }
   }
 }
-
-let activeBot = null;
 
 class BrowserBot {
   constructor(botConfig) {
     this.config = botConfig;
     this.logger = new StructuredLogger(botConfig.logLevel, {
-      sessionId: botConfig.sessionId,
-      platform: botConfig.platform
+      platform: botConfig.platform,
     });
 
     this.browser = null;
     this.context = null;
     this.page = null;
-    this.gateway = null;
     this.platform = null;
-    this.audioCaptureActive = false;
-    this.audioFrameSequence = 0;
     this.shouldStop = false;
-    this.stopReason = null;
-    this.isJoined = false;
-    this.hasLeft = false;
-    this.initialSpeechTimeout = null;
-    this.lastMeetingActiveTs = Date.now();
     this.signalHandler = this.handleProcessSignal.bind(this);
-    
-    // Initialize LLM service
-    this.llmService = null;
-    if (this.config.enableTtsPlayback) {
-      this.llmService = new MockLLMService(this.config, this.logger);
+    this.gateway = null;
+    this.gatewayConnected = false;
+    this.audioFrameCount = 0;
+    this.audioBytesSent = 0;
+    this.lastAudioLogTime = Date.now();
+    this.speechChunksReceived = 0;
+    this.speechBytesReceived = 0;
+    this.lastSpeechLogTime = Date.now();
+    this.cdpClient = null;
+  }
+
+  async sendStatusUpdate(stage, message, metadata = {}) {
+    /**
+     * Send automation status update to backend API.
+     * This updates the frontend via WebSocket through the backend.
+     * Fire-and-forget: non-blocking, never throws errors.
+     */
+    if (!this.config.sessionId) {
+      this.logger.warn("Cannot send status update: sessionId not available");
+      return;
     }
-    
-    // Audio streaming from rt_gateway
-    this.audioStream = null;
-    this.audioStreamBuffer = [];
-    this.ttsEnabled = this.config.enableTtsPlayback;
-    
-    // Audio input stream for STT
-    this.audioInputStream = null;
-    
-    // Reconnection state
-    this.reconnectAttempts = 0;
-    this.reconnectTimeout = null;
-    this.isReconnecting = false;
-    
-    // Audio input reconnection state
-    this.audioInputReconnectAttempts = 0;
-    this.audioInputReconnectTimeout = null;
-    this.isAudioInputReconnecting = false;
+
+    // Fire and forget - don't block the flow
+    setImmediate(async () => {
+      try {
+        const apiUrl = new URL("/api/demo/status", this.config.apiBaseUrl);
+        const payload = JSON.stringify({
+          sessionId: this.config.sessionId,
+          stage: stage,
+          message: message,
+          metadata: metadata,
+        });
+
+        const requestModule = apiUrl.protocol === "https:" ? https : http;
+
+        return new Promise((resolve, reject) => {
+          const req = requestModule.request(
+            {
+              hostname: apiUrl.hostname,
+              port: apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80),
+              path: apiUrl.pathname,
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(payload),
+              },
+              timeout: 5000,
+            },
+            (res) => {
+              let data = "";
+              res.on("data", (chunk) => {
+                data += chunk;
+              });
+              res.on("end", () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                  this.logger.debug("Status update sent successfully", {
+                    stage,
+                    statusCode: res.statusCode,
+                  });
+                  resolve();
+                } else {
+                  this.logger.warn("Status update failed", {
+                    stage,
+                    statusCode: res.statusCode,
+                    response: data,
+                  });
+                  resolve(); // Don't reject - just resolve silently
+                }
+              });
+            }
+          );
+
+          req.on("error", (error) => {
+            this.logger.warn("Failed to send status update", {
+              stage,
+              error: error.message,
+              apiBaseUrl: this.config.apiBaseUrl,
+            });
+            resolve(); // Don't reject - just resolve silently
+          });
+
+          req.on("timeout", () => {
+            req.destroy();
+            this.logger.warn("Status update request timeout", { stage });
+            resolve(); // Don't reject - just resolve silently
+          });
+
+          req.write(payload);
+          req.end();
+        });
+      } catch (error) {
+        this.logger.warn("Error sending status update", {
+          stage,
+          error: error.message,
+        });
+        // Don't throw - status updates are non-critical
+      }
+    });
   }
 
   async start() {
     if (!this.config.meetingUrl) {
-      throw new Error('MEETING_URL environment variable is required');
+      throw new Error("MEETING_URL environment variable is required");
     }
 
-    this.logger.info('Browser bot starting', {
+    this.logger.info("Browser bot starting", {
       meetingUrl: this.config.meetingUrl,
-      headless: this.config.headless
+      headless: this.config.headless,
     });
 
     try {
+      // Send initial status
+      await this.sendStatusUpdate(
+        "initializing",
+        "Bot is initializing...",
+        { meetingUrl: this.config.meetingUrl, platform: this.config.platform }
+      );
+
       this.registerSignalHandlers();
-      await this.connectGateway();
-      if (this.config.enableAudioCapture) {
-        await this.connectAudioInputGateway(); // Connect to audio input stream for STT
-      } else {
-        this.logger.info('Audio input stream skipped (ENABLE_AUDIO_CAPTURE=false)');
-      }
+      
+      // Launch browser
       await this.launchBrowser();
+      await this.sendStatusUpdate(
+        "browser_launched",
+        "Browser launched successfully",
+        { headless: this.config.headless }
+      );
+
+      // Navigate to meeting
+      await this.sendStatusUpdate(
+        "navigating",
+        "Navigating to meeting URL...",
+        { meetingUrl: this.config.meetingUrl }
+      );
+      await this.navigateToMeeting();
+      
+      // Join meeting
+      await this.sendStatusUpdate(
+        "joining_meeting",
+        "Joining the meeting...",
+        { platform: this.config.platform }
+      );
       await this.joinMeeting();
-      await this.initializeMedia();
+      
+      // Send status that we're in the meeting
+      await this.sendStatusUpdate(
+        "in_meeting",
+        "Successfully joined the meeting",
+        { platform: this.config.platform, botName: this.config.botName }
+      );
+      await this.sendStatusUpdate(
+        "waiting_to_admit",
+        "Waiting to admit users into the meeting",
+        { platform: this.config.platform, botName: this.config.botName }
+      );
+
+      // Connect audio streaming WebSocket - this is critical, so throw if it fails
+      await this.connectWebSocket();
+
+      // Call afterJoin after WebSocket connection to ensure meeting is fully joined
+      if (this.platform && typeof this.platform.afterJoin === 'function') {
+        this.logger.info("Calling platform.afterJoin()");
+        try {
+          await this.platform.afterJoin();
+          this.logger.info("platform.afterJoin() completed successfully");
+        } catch (error) {
+          this.logger.warn("afterJoin failed, continuing anyway", {
+            error: error.message,
+            stack: error.stack,
+          });
+          // Don't throw - continue with bot operation
+        }
+      } else {
+        this.logger.debug("afterJoin not available on platform", {
+          hasPlatform: !!this.platform,
+          hasAfterJoin: this.platform && typeof this.platform.afterJoin === 'function'
+        });
+      }
+
+      // Start main loop (continues regardless of WebSocket status)
+      // The bot will continue operating even if WebSocket never connects
       await this.runLoop();
+    } catch (error) {
+      this.logger.error("Bot error", { error: error.message, stack: error.stack });
+      await this.sendStatusUpdate(
+        "error",
+        `Error: ${error.message}`,
+        { error: error.message, stack: error.stack }
+      );
+      throw error;
     } finally {
-      await this.cleanup();
       this.unregisterSignalHandlers();
+      await this.cleanup();
     }
   }
 
   registerSignalHandlers() {
-    ['SIGINT', 'SIGTERM'].forEach((signal) => {
+    ["SIGINT", "SIGTERM"].forEach((signal) => {
       process.on(signal, this.signalHandler);
     });
   }
 
   unregisterSignalHandlers() {
-    ['SIGINT', 'SIGTERM'].forEach((signal) => {
+    ["SIGINT", "SIGTERM"].forEach((signal) => {
       process.off(signal, this.signalHandler);
     });
   }
 
   async handleProcessSignal(signal) {
-    this.logger.warn('Received termination signal, stopping bot', { signal });
-    await this.requestStop(`signal:${signal}`);
+    this.logger.warn("Received termination signal, stopping bot", { signal });
+    this.shouldStop = true;
   }
 
-  async connectGateway() {
-    return new Promise((resolve, reject) => {
-      this.logger.info('Connecting to RT Gateway', { url: this.config.rtGatewayUrl });
-      
-      // Parse rt_gateway URL to get base URL
-      const gatewayUrl = new URL(this.config.rtGatewayUrl);
-      const baseUrl = `${gatewayUrl.protocol}//${gatewayUrl.host}`;
-      const sessionId = this.config.sessionId;
-      
-      // Connect to audio stream endpoint
-      this.logger.info('Connecting to bot audio stream', { url: `${baseUrl}/ws/bot_audio_output/${sessionId}` });
-      const audioWs = new WebSocket(`${baseUrl}/ws/bot_audio_output/${sessionId}`);
+  async runLoop() {
+    this.logger.info("Browser running continuously - press Ctrl+C to stop");
+    let statusCheckCount = 0;
 
-      const self = this; // Capture 'this' reference
-      
-      // Set a timeout for initial connection (10 seconds)
-      const connectionTimeout = setTimeout(() => {
-        if (!self.audioStream) {
-          self.logger.error('Connection timeout: Failed to connect to RT Gateway within 10 seconds');
-          audioWs.close();
-          // Don't reject - allow bot to continue and retry
-          self.scheduleReconnect(baseUrl, sessionId);
-          resolve(); // Continue without connection for now
-        }
-      }, 10000);
-
-      const cleanup = () => {
-        clearTimeout(connectionTimeout);
-        audioWs.off('open', handleOpen);
-        audioWs.off('error', handleError);
-        audioWs.off('message', handleMessage);
-        audioWs.off('close', handleClose);
-      };
-      
-      const handleOpen = () => {
-        cleanup();
-        self.logger.info('✅ Connected to RT Gateway audio stream', { 
-          attempt: self.reconnectAttempts + 1,
-          sessionId: sessionId,
-          url: `${baseUrl}/ws/bot_audio_output/${sessionId}`
-        });
-        self.audioStream = audioWs;
-        self.reconnectAttempts = 0; // Reset on successful connection
-        self.isReconnecting = false;
-        
-        audioWs.on('message', handleMessage);
-        audioWs.on('close', handleClose);
-        audioWs.on('error', (error) => {
-          // Only log errors if not in a closing state
-          if (audioWs.readyState !== WebSocket.CLOSING && audioWs.readyState !== WebSocket.CLOSED) {
-            self.logger.error('RT Gateway audio stream error', { error: error.message });
-          }
-        });
-        
-        resolve();
-      };
-
-      const handleMessage = (data) => {
-        // Handle binary PCM audio data
-        if (Buffer.isBuffer(data)) {
-          self.logger.info('Received PCM audio chunk', { bytes: data.length });
-          self.handlePCMAudioChunk(data);
-        } else {
-          try {
-            const message = JSON.parse(data.toString());
-            if (message.type === 'tts_complete') {
-              self.logger.info('TTS audio stream complete');
-            }
-          } catch (e) {
-            // Ignore non-JSON messages
-          }
-        }
-      };
-
-      const handleClose = (code, reason) => {
-        cleanup();
-        self.logger.warn('RT Gateway audio stream closed', { code, reason: reason?.toString() });
-        self.audioStream = null;
-        
-        // Don't reconnect if bot is stopping
-        if (self.shouldStop) {
-          self.logger.info('Bot stopping, not reconnecting audio stream');
-          return;
-        }
-        
-        // Don't reconnect for intentional close (code 1000 = normal closure)
-        if (code === 1000) {
-          self.logger.info('Normal WebSocket closure, not reconnecting');
-          return;
-        }
-        
-        // Trigger reconnection
-        self.scheduleReconnect(baseUrl, sessionId);
-      };
-
-      const handleError = (error) => {
-        cleanup();
-        self.logger.error('❌ Failed to connect to RT Gateway audio stream', { 
-          error: error.message, 
-          attempt: self.reconnectAttempts + 1,
-          url: `${baseUrl}/ws/bot_audio_output/${sessionId}`,
-          hint: 'Make sure unified service is running on port 8000'
-        });
-        self.audioStream = null;
-        
-        // Don't reconnect if bot is stopping
-        if (self.shouldStop) {
-          self.logger.info('Bot stopping, not scheduling reconnection');
-          resolve(); // Continue without WebSocket connection
-          return;
-        }
-        
-        // If this is the initial connection attempt, schedule reconnect
-        if (self.reconnectAttempts === 0) {
-          self.logger.warn('Will retry connection in background...');
-          self.scheduleReconnect(baseUrl, sessionId);
-          resolve(); // Continue without WebSocket connection initially
-        } else {
-          // Already in reconnection mode, will retry
-          resolve();
-        }
-      };
-
-      audioWs.once('open', handleOpen);
-      audioWs.once('error', handleError);
-      audioWs.once('close', handleClose);
-    });
-  }
-
-  /**
-   * Calculate reconnection delay with exponential backoff
-   * Starts at 3 seconds, adds 3 seconds per retry, caps at 30 seconds
-   * @param {number} attemptNumber - The current reconnection attempt number (1-based)
-   * @returns {number} Delay in milliseconds
-   */
-  calculateReconnectDelay(attemptNumber) {
-    const baseDelay = 3000; // 3 seconds
-    const increment = 3000; // Add 3 seconds per attempt
-    const maxDelay = 30000; // Cap at 30 seconds
-    
-    // Calculate: start at 3s, add 3s per attempt (attempt 1 = 3s, attempt 2 = 6s, etc.)
-    const delay = baseDelay + (attemptNumber - 1) * increment;
-    
-    // Cap at max delay
-    return Math.min(delay, maxDelay);
-  }
-
-  /**
-   * Schedule reconnection with exponential backoff
-   * Starts at 3 seconds, adds 3 seconds per retry, caps at 30 seconds
-   */
-  scheduleReconnect(baseUrl, sessionId) {
-    // Don't reconnect if already reconnecting or bot is stopping
-    if (this.isReconnecting || this.shouldStop) {
-      return;
-    }
-    
-    this.isReconnecting = true;
-    this.reconnectAttempts++;
-    
-    const delay = this.calculateReconnectDelay(this.reconnectAttempts);
-    
-    this.logger.info('Scheduling audio stream reconnection', {
-      attempt: this.reconnectAttempts,
-      delayMs: delay
-    });
-    
-    this.reconnectTimeout = setTimeout(async () => {
-      this.reconnectTimeout = null;
-      
-      // Don't reconnect if bot is stopping
-      if (this.shouldStop) {
-        this.logger.info('Bot stopping, cancelling reconnection');
-        this.isReconnecting = false;
-        return;
-      }
-      
+    while (!this.shouldStop) {
       try {
-        this.logger.info('Attempting to reconnect audio stream', { attempt: this.reconnectAttempts });
-        
-        // Connect to audio stream endpoint
-        const audioWs = new WebSocket(`${baseUrl}/ws/bot_audio_output/${sessionId}`);
-        
-        const self = this;
-        
-        audioWs.once('open', () => {
-          self.logger.info('Reconnected to RT Gateway audio stream', { attempt: self.reconnectAttempts });
-          self.audioStream = audioWs;
-          self.reconnectAttempts = 0; // Reset on successful reconnection
-          self.isReconnecting = false;
-          
-          audioWs.on('message', (data) => {
-            // Handle binary PCM audio data
-            if (Buffer.isBuffer(data)) {
-              self.logger.info('Received PCM audio chunk', { bytes: data.length });
-              self.handlePCMAudioChunk(data);
-            } else {
-              try {
-                const message = JSON.parse(data.toString());
-                if (message.type === 'tts_complete') {
-                  self.logger.info('TTS audio stream complete');
-                }
-              } catch (e) {
-                // Ignore non-JSON messages
-              }
-            }
-          });
-          
-          audioWs.on('close', (code, reason) => {
-            self.logger.warn('RT Gateway audio stream closed after reconnection', { code, reason: reason?.toString() });
-            self.audioStream = null;
-            
-            // Don't reconnect if bot is stopping
-            if (self.shouldStop) {
-              return;
-            }
-            
-            // Don't reconnect for intentional close
-            if (code === 1000) {
-              return;
-            }
-            
-            // Schedule another reconnection
-            self.scheduleReconnect(baseUrl, sessionId);
-          });
-          
-          audioWs.on('error', (error) => {
-            if (audioWs.readyState !== WebSocket.CLOSING && audioWs.readyState !== WebSocket.CLOSED) {
-              self.logger.error('RT Gateway audio stream error after reconnection', { error: error.message });
-            }
-          });
-        });
-        
-        audioWs.once('error', (error) => {
-          self.logger.warn('Reconnection attempt failed', { error: error.message, attempt: self.reconnectAttempts });
-          self.audioStream = null;
-          
-          // Don't reconnect if bot is stopping
-          if (self.shouldStop) {
-            self.isReconnecting = false;
-            return;
+        if (this.page && !this.page.isClosed()) {
+          const url = this.page.url();
+          const title = await this.page.title().catch(() => "unknown");
+
+          this.logger.debug("Browser is active", { url, title });
+
+          statusCheckCount++;
+          if (statusCheckCount % 6 === 0) {
+            const audioStatus = await this.page
+              .evaluate(() => {
+                const state = window.__aurrayAudioCaptureState;
+                if (!state) return { initialized: false };
+
+                return {
+                  initialized: true,
+                  active: state.active,
+                  sourcesCount: state.sources.size,
+                  connectionsCount: state.connections.size,
+                  contextState: state.context ? state.context.state : null,
+                  sourceIds: Array.from(state.sources.keys()),
+                };
+              })
+              .catch(() => ({ initialized: false }));
+
+            this.logger.info("Audio capture status", audioStatus);
           }
-          
-          // Schedule another reconnection attempt
-          self.scheduleReconnect(baseUrl, sessionId);
-        });
-        
-        audioWs.once('close', (code, reason) => {
-          // If connection closes before 'open', trigger reconnection
-          if (self.audioStream !== audioWs) {
-            self.logger.warn('Reconnection closed before opening', { code, reason: reason?.toString() });
-            self.scheduleReconnect(baseUrl, sessionId);
-          }
-        });
-        
+        } else {
+          this.logger.warn("Page closed - browser may have crashed");
+          break;
+        }
+
+        if (this.browser && !this.browser.isConnected()) {
+          this.logger.warn("Browser disconnected");
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       } catch (error) {
-        this.logger.error('Error during reconnection attempt', { error: error.message });
-        this.isReconnecting = false;
-        // Schedule another reconnection attempt
-        this.scheduleReconnect(baseUrl, sessionId);
+        this.logger.error("Error in run loop", { error: error.message });
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
-    }, delay);
-  }
+    }
 
-  /**
-   * Handle incoming PCM audio chunk from rt_gateway
-   */
-  handlePCMAudioChunk(buffer) {
-    // Convert buffer to Buffer if it's already a Buffer
-    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    
-    // Unpack float32 samples from binary buffer
-    const samples = [];
-    for (let i = 0; i < buf.length; i += 4) {
-      if (i + 4 <= buf.length) {
-        const sample = buf.readFloatLE(i);
-        samples.push(sample);
-      }
-    }
-    
-    this.logger.info('Unpacked PCM samples', { bytes: buf.length, samples: samples.length });
-    
-    // Filter out silent samples and check if we have audio
-    const nonZeroSamples = samples.filter(s => Math.abs(s) > 0.0001);
-    
-    // Ignore very small chunks (likely residual/noise) - require at least 100 samples
-    if (samples.length < 100) {
-      this.logger.debug('Received very small PCM chunk, ignoring', { samples: samples.length, nonZero: nonZeroSamples.length });
-      return;
-    }
-    
-    if (nonZeroSamples.length > 0 && samples.length > 0) {
-      // Inject PCM samples directly into virtual mic
-      this.playAudioToMeeting(samples).catch(error => {
-        this.logger.error('Failed to inject PCM audio into meeting', { error: error.message });
-      });
-    } else {
-      this.logger.debug('Received silent PCM chunk, skipping');
-    }
-  }
-
-  registerGateway() {
-    if (!this.gateway || this.gateway.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    const registrationMessage = {
-      type: 'bot_registration',
-      sessionId: this.config.sessionId,
-      meetingId: this.config.meetingId,
-      botName: this.config.botName,
-      platform: this.config.platform,
-      audioConfig: {
-        sampleRate: this.config.audioSampleRate,
-        channels: this.config.audioChannels
-      }
-    };
-    this.gateway.send(JSON.stringify(registrationMessage));
+    this.logger.info("Run loop ended");
   }
 
   async launchBrowser() {
-    this.logger.info('Launching Chromium with Playwright');
-
-    this.browser = await chromium.launch({
+    const browserName =
+      this.config.browserEngine === "chrome" ? "Chrome" : "Chromium";
+    this.logger.info(`Launching ${browserName}`, {
       headless: this.config.headless,
-      args: this.config.browserArgs
+      platform: process.platform,
+      engine: this.config.browserEngine,
+    });
+
+    const platformArgs = getPlatformBrowserArgs(this.config.platform);
+    const envArgs = this.config.browserArgs || [];
+    let args = [...envArgs, ...platformArgs, ...DEFAULT_BROWSER_ARGS];
+
+    const launchOptions = {
+      headless: this.config.headless,
+      args,
+    };
+
+    if (!this.config.headless && process.platform === "darwin") {
+      launchOptions.args = launchOptions.args.filter(
+        (a) => !a.includes("headless")
+      );
+    }
+
+    if (this.config.browserEngine === "chrome") {
+      if (process.platform === "darwin") {
+        launchOptions.executablePath =
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+      } else if (process.platform === "linux") {
+        launchOptions.executablePath = "/usr/bin/google-chrome";
+      } else if (process.platform === "win32") {
+        launchOptions.executablePath =
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+      }
+    }
+
+    this.browser = await chromium.launch(launchOptions);
+    this.logger.info("Browser launched", {
+      headless: this.config.headless,
+      engine: this.config.browserEngine,
     });
 
     const contextOptions = {
       viewport: { width: 1280, height: 720 },
       ignoreHTTPSErrors: true,
       locale: this.config.browserLocale,
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
     };
-    
-    if (this.config.storageState) {
-      const statePath = path.resolve(this.config.storageState);
-      if (fs.existsSync(statePath)) {
-        this.logger.info('Using Playwright storageState for authenticated session', { storageState: statePath });
-        contextOptions.storageState = statePath;
-      } else {
-        this.logger.warn('Configured STORAGE_STATE not found; continuing without saved auth', { storageState: statePath });
+
+    if (this.config.platform === "google_meet") {
+      const authStatePath = path.resolve(__dirname, "google_auth_state.json");
+      if (fs.existsSync(authStatePath)) {
+        contextOptions.storageState = authStatePath;
+        this.logger.info("Using Google auth storageState", { authStatePath });
       }
     }
+
     this.context = await this.browser.newContext(contextOptions);
 
-    this.page = await this.context.newPage();
-    
-    // Block protocol handler redirects and Teams launcher pages to prevent Teams app popup
-    await this.page.route('**/*', (route) => {
-      const url = route.request().url();
-      // Block msteams:// protocol handler redirects
-      if (url.startsWith('msteams://')) {
-        this.logger.info('Blocked Teams app protocol handler', { url });
-        route.abort();
-        return;
-      }
-      // Block Teams launcher page which triggers the macOS system dialog
-      if (url.includes('/dl/launcher/launcher.html') || url.includes('teams.live.com/dl/')) {
-        this.logger.info('Blocked Teams launcher page - will use direct meeting URL', { url });
-        route.abort();
-        return;
-      }
-      route.continue();
-    });
-    
-    // Handle dialog events (like Teams app popup) - auto-dismiss
-    this.page.on('dialog', async (dialog) => {
-      const dialogType = dialog.type();
-      const dialogMessage = dialog.message();
-      this.logger.info('Browser dialog detected', { type: dialogType, message: dialogMessage.substring(0, 100) });
-      
-      // Auto-dismiss dialogs that might be asking to open Teams app
-      if (dialogType === 'beforeunload' || dialogMessage.includes('Teams') || dialogMessage.includes('msteams')) {
-        this.logger.info('Auto-dismissing Teams app dialog');
-        await dialog.dismiss().catch(() => {});
-        return;
-      }
-      
-      // Default: dismiss all dialogs
-      await dialog.dismiss().catch(() => {});
-    });
-    
-    // Capture console logs from the page
-    this.page.on('console', (msg) => {
-      const text = msg.text();
-      if (text.includes('[Clerk]')) {
-        this.logger.info('Browser console', { message: text });
-      }
-    });
-    
-    this.page.on('pageerror', (error) => {
-      this.logger.error('Browser page error', { error: error.message });
-    });
-    // Handle page/browser close events - trigger cleanup and notify backend
-    this.page.on('close', async () => {
-      this.logger.warn('Browser page closed - triggering cleanup');
-      // Stop the bot and clean up when page closes unexpectedly
-      if (!this.shouldStop) {
-        await this.requestStop('browser_closed');
-        // Leave meeting and notify backend
-        if (this.isJoined && !this.hasLeft) {
-          await this.leaveMeeting('browser_closed');
-        }
-        // Cleanup will be called when shouldStop is set
-        await this.cleanup();
-      }
-    });
-    this.browser.on('disconnected', async () => {
-      this.logger.warn('Browser disconnected - triggering cleanup');
-      // Stop the bot and clean up when browser disconnects
-      if (!this.shouldStop) {
-        await this.requestStop('browser_disconnected');
-        // Leave meeting and notify backend
-        if (this.isJoined && !this.hasLeft) {
-          await this.leaveMeeting('browser_disconnected');
-        }
-        // Cleanup will be called when shouldStop is set
-        await this.cleanup();
-      }
-    });
-    
-    // Block Teams app protocol handlers and launcher redirects via JavaScript interception (before navigation)
-    await this.page.addInitScript(() => {
-      // Override window.location to block msteams:// protocol handlers and launcher redirects
-      const originalLocationSetter = Object.getOwnPropertyDescriptor(window, 'location').set;
-      Object.defineProperty(window, 'location', {
-        set: function(value) {
-          if (typeof value === 'string') {
-            if (value.startsWith('msteams://')) {
-              console.log('[Clerk] Blocked Teams app redirect:', value);
-              return; // Block the redirect
-            }
-            // Block redirects to launcher page
-            if (value.includes('/dl/launcher/') || value.includes('teams.live.com/dl/')) {
-              console.log('[Clerk] Blocked Teams launcher redirect:', value);
-              return; // Block the redirect
-            }
-          }
-          return originalLocationSetter.call(window, value);
-        },
-        get: function() {
-          return window.document.location;
-        },
-        configurable: true
+    const origin = getPlatformPermissionsOrigin(
+      this.config.platform,
+      this.config.meetingUrl
+    );
+    if (origin) {
+      await this.context
+        .grantPermissions(["microphone", "camera"], { origin })
+        .catch((err) => {
+          this.logger.warn("Failed to grant permissions", {
+            error: err.message,
+          });
+        });
+      this.logger.debug("Granted permissions", {
+        origin,
+        platform: this.config.platform,
       });
-      
-      // Also block attempts to open Teams via window.open
-      const originalOpen = window.open;
-      window.open = function(url, ...args) {
-        if (typeof url === 'string') {
-          if (url.startsWith('msteams://') || url.includes('/dl/launcher/')) {
-            console.log('[Clerk] Blocked Teams app/launcher window.open:', url);
-            return null;
-          }
-        }
-        return originalOpen.apply(window, [url, ...args]);
-      };
-      
-      // Block protocol handler links and launcher links
-      document.addEventListener('click', (e) => {
-        const link = e.target.closest('a');
-        if (link && link.href) {
-          if (link.href.startsWith('msteams://') || link.href.includes('/dl/launcher/')) {
-            console.log('[Clerk] Blocked Teams app/launcher link click');
-            e.preventDefault();
-            e.stopPropagation();
-            return false;
-          }
-        }
-      }, true); // Use capture phase to catch early
-      
-      // Also intercept form submissions that might trigger launcher
-      document.addEventListener('submit', (e) => {
-        const form = e.target;
-        if (form && form.action && (form.action.includes('/dl/launcher/') || form.action.startsWith('msteams://'))) {
-          console.log('[Clerk] Blocked Teams launcher form submission');
-          e.preventDefault();
-          e.stopPropagation();
-          return false;
-        }
-      }, true);
-      
-      console.log('[Clerk] Teams protocol handler and launcher blocker installed');
-    });
-    
-    // Inject config into page so Web Speech API can access sessionId and meetingId
-    await this.page.addInitScript((config) => {
-      window.__clerkConfig = {
-        sessionId: config.sessionId,
-        meetingId: config.meetingId
-      };
-      console.log('[Clerk] Config injected into page', window.__clerkConfig);
-    }, {
-      sessionId: this.config.sessionId,
-      meetingId: this.config.meetingId
-    });
+    }
 
-    // Inject virtual microphone BEFORE navigation
+    this.page = await this.context.newPage();
+
     await this.page.addInitScript(() => {
-      // Simple virtual mic setup that injects audio
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (AudioContextClass) {
-        // If a virtual mic is already installed by later scripts, do not install another
-        if (window.clerkVirtualMic) {
-          console.log('[Clerk] Virtual mic already present - skipping early installer');
-          return;
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+
+      const originalQuery = window.navigator.permissions.query.bind(
+        window.navigator.permissions
+      );
+      window.navigator.permissions.query = function (params) {
+        if (params?.name === "notifications") {
+          return Promise.resolve({ state: Notification.permission });
         }
-        const context = new AudioContextClass({ sampleRate: 48000 });
-        const VirtualMic = {
-          ctx: context,
-          audioBuffer: [],
-          readIndex: 0, // Track where we are in the buffer
-          lastOutputValue: 0, // Last output sample for smooth transitions
-          lastInjectionTime: 0, // Track when audio was last injected
-          muteTimeoutId: null, // Timeout to auto-mute after silence
-          mediaStreamDestination: context.createMediaStreamDestination(),
-          scriptNode: null,
-          gainNode: null,
-          
-          init: function() {
-            if (!this.scriptNode) {
-              // Create gain node so we can tweak output level if needed
-              this.gainNode = context.createGain();
-              // Start muted - will be unmuted when audio is injected
-              this.gainNode.gain.setValueAtTime(0.0, context.currentTime);
-              this.isMuted = true;
+        return originalQuery(params);
+      };
+
+      Object.defineProperty(navigator, "plugins", {
+        get: () => [1, 2, 3, 4],
+      });
+
+      Object.defineProperty(navigator, "languages", {
+        get: () => ["en-US", "en"],
+      });
+
+      const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(
+        navigator.mediaDevices
+      );
+      navigator.mediaDevices.getUserMedia = async function (constraints) {
+        const c = constraints || {};
+        const wantsAudio =
+          !!c.audio &&
+          (typeof c.audio === "boolean" || typeof c.audio === "object");
+        const wantsVideo =
+          !!c.video &&
+          (typeof c.video === "boolean" || typeof c.video === "object");
+
+        const contextInfo = {
+          url: window.location.href,
+          origin: window.location.origin,
+          frameName: window.name || 'main',
+          isTopFrame: window === window.top,
+          hasVirtualStream: !!window.aurrayVirtualMicStream,
+          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+          hasAudioContext: !!window.__aurrayMasterAudioContext,
+          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+        };
+        
+        console.log("[AURRAY] getUserMedia called", {
+          wantsAudio,
+          wantsVideo,
+          ...contextInfo,
+          constraints: JSON.stringify(c).substring(0, 200)
+        });
+
+        if (!wantsAudio) {
+          return originalGetUserMedia.call(this, constraints);
+        }
+
+        let virtualStream = window.aurrayVirtualMicStream;
+        
+        // Teams-specific: If virtual stream is missing, try to create it inline
+        if (!virtualStream && window.location.href.includes('teams.microsoft.com') && window.location.href.includes('light-meetings')) {
+          console.log("[AURRAY] Teams: Virtual stream missing, attempting inline initialization");
+          try {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (AudioContextClass) {
+              const ctx = new AudioContextClass({ sampleRate: 48000 });
+              window.__aurrayMasterAudioContext = ctx;
               
-              this.scriptNode = context.createScriptProcessor(4096, 0, 1);
+              const buffer = [];
+              let readIndex = 0;
+              const processor = ctx.createScriptProcessor(1024, 1, 1);
               
-              this.scriptNode.onaudioprocess = (e) => {
-                const output = e.outputBuffer.getChannelData(0);
-                const buffer = this.audioBuffer;
-                const bufferLength = buffer.length;
-                const outputLength = output.length;
+              let tonePhase = 0;
+              const TONE_FREQ = 20;
+              const TONE_AMPLITUDE = 0.0001;
+              
+              processor.onaudioprocess = (event) => {
+                const output = event.outputBuffer.getChannelData(0);
+                const len = output.length;
+                const sampleRate = event.outputBuffer.sampleRate;
                 
-                // Check if buffer has been fully consumed
-                if (this.readIndex >= bufferLength) {
-                  // Buffer is empty - output COMPLETE silence to prevent clicking
-                  // If we were previously outputting audio, fade out smoothly
-                  if (Math.abs(this.lastOutputValue) > 0.001) {
-                    // Fade out from last value to silence over first 128 samples (~2.7ms at 48kHz)
-                    const fadeLength = Math.min(128, outputLength);
-                    for (let i = 0; i < outputLength; i++) {
-                      if (i < fadeLength) {
-                        const fadeProgress = i / fadeLength;
-                        output[i] = this.lastOutputValue * (1 - fadeProgress);
-                      } else {
-                        output[i] = 0; // Complete silence
-                      }
-                    }
-                    this.lastOutputValue = 0;
+                for (let i = 0; i < len; i++) {
+                  if (readIndex < buffer.length) {
+                    output[i] = buffer[readIndex++];
                   } else {
-                    // Already silent - output zeros immediately
-                    for (let i = 0; i < outputLength; i++) {
-                      output[i] = 0;
-                    }
-                  }
-                  
-                  // Clear buffer completely when empty
-                  if (bufferLength > 0) {
-                    this.audioBuffer.length = 0;
-                  }
-                  this.readIndex = 0;
-                  
-                  // Mute gain node immediately when buffer is empty to ensure complete silence
-                  // Don't wait - mute right away to prevent any playback from small residual chunks
-                  if (!this.isMuted && this.gainNode) {
-                    const now = this.ctx.currentTime;
-                    // Smoothly mute over 10ms to prevent clicks
-                    this.gainNode.gain.cancelScheduledValues(now);
-                    this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, now);
-                    this.gainNode.gain.linearRampToValueAtTime(0.0, now + 0.01);
-                    this.isMuted = true;
-                    
-                    // Clear any pending mute timeout
-                    if (this.muteTimeoutId) {
-                      clearTimeout(this.muteTimeoutId);
-                      this.muteTimeoutId = null;
-                    }
-                    
-                    console.log('[Clerk] Muted gain node - buffer empty');
-                  }
-                  return; // Exit early when buffer is empty
-                }
-                
-                // Read samples from buffer starting at readIndex with smooth transitions
-                let lastSample = this.lastOutputValue || 0;
-                let samplesRead = 0;
-                
-                for (let i = 0; i < outputLength; i++) {
-                  if (this.readIndex < bufferLength) {
-                    const sample = buffer[this.readIndex++];
-                    // Smooth transition from previous sample to prevent clicks
-                    if (samplesRead === 0 && Math.abs(sample - lastSample) > 0.1) {
-                      // Apply crossfade for first sample if there's a big jump
-                      output[i] = lastSample * 0.3 + sample * 0.7;
-                    } else {
-                      output[i] = sample;
-                    }
-                    lastSample = sample;
-                    samplesRead++;
-                  } else {
-                    // Buffer exhausted mid-frame - smooth fade to silence
-                    const fadeStart = i;
-                    const fadeLength = Math.min(64, outputLength - fadeStart);
-                    const fadeProgress = (i - fadeStart) / fadeLength;
-                    
-                    if (fadeProgress < 1) {
-                      output[i] = lastSample * (1 - fadeProgress);
-                    } else {
-                      output[i] = 0;
-                    }
-                    lastSample = output[i];
+                    tonePhase += (TONE_FREQ / sampleRate) * 2 * Math.PI;
+                    if (tonePhase > 2 * Math.PI) tonePhase -= 2 * Math.PI;
+                    output[i] = Math.sin(tonePhase) * TONE_AMPLITUDE;
                   }
                 }
                 
-                this.lastOutputValue = lastSample;
-                
-                // Trim consumed samples periodically to prevent memory growth
-                // Only trim when we're well ahead to avoid interrupting playback
-                // But don't trim if we're still within reasonable bounds
-                if (this.readIndex > 50000 && bufferLength > 20000) {
-                  // Only trim if we've consumed a lot and buffer is large
-                  const trimAmount = Math.min(20000, this.readIndex - 20000);
-                  if (trimAmount > 0 && this.readIndex - trimAmount < bufferLength) {
-                    this.audioBuffer.slice(trimAmount);
-                    this.readIndex -= trimAmount;
-                  }
-                }
-                
-                // Log progress occasionally (only when processing audio)
-                if (Math.random() < 0.01) {
-                  const remaining = Math.max(0, bufferLength - this.readIndex);
-                  console.log('[Clerk] Audio processing:', { readIndex: this.readIndex, total: bufferLength, remaining });
+                if (readIndex > 48000 * 5) {
+                  buffer.splice(0, readIndex);
+                  readIndex = 0;
                 }
               };
               
-              // Note: ScriptProcessorNode with 0 input channels doesn't need input connection
-              // The oscillator is NOT needed and might cause noise - removed
-              // ScriptProcessorNode will process automatically when connected to destination
+              const gain = ctx.createGain();
+              gain.gain.value = 0.0;
+              processor.connect(gain);
+              gain.connect(ctx.destination);
               
-              // Connect through gain node for amplification
-              this.scriptNode.connect(this.gainNode);
-              this.gainNode.connect(this.mediaStreamDestination);
-              console.log('[Clerk] Virtual mic initialized with gain amplification');
-            }
-          },
-          
-          // Note: Audio is continuously processed by ScriptProcessorNode
-          
-          getStream: function() {
-            this.init();
-            const stream = this.mediaStreamDestination.stream;
-            console.log('[Clerk] getStream called, returning stream with', stream.getAudioTracks().length, 'tracks');
-            stream.getAudioTracks().forEach((track, i) => {
-              console.log('[Clerk] Track', i, ':', { id: track.id, kind: track.kind, enabled: track.enabled, readyState: track.readyState });
-            });
-            return stream;
-          },
-          
-          injectAudio: function(samples) {
-            this.init();
-            if (!Array.isArray(samples) || samples.length === 0) {
-              console.warn('[Clerk] injectAudio called with empty samples');
-              return;
-            }
-
-            // Ignore very small chunks (likely residual/noise) - require at least 300 samples (18.75ms at 16kHz)
-            // This prevents tiny chunks from continuously unmuting the gain
-            if (samples.length < 300) {
-              console.debug('[Clerk] Ignoring very small audio chunk', { samples: samples.length });
-              return;
-            }
-
-            // Update injection timestamp
-            this.lastInjectionTime = Date.now();
-            
-            // Clear any pending mute timeout since we're injecting new audio
-            if (this.muteTimeoutId) {
-              clearTimeout(this.muteTimeoutId);
-              this.muteTimeoutId = null;
-            }
-            
-            // Unmute gain when injecting substantial audio
-            if (this.isMuted && this.gainNode) {
-              // Smoothly unmute over 10ms to prevent clicks
-              const now = this.ctx.currentTime;
-              this.gainNode.gain.setValueAtTime(0.0, now);
-              this.gainNode.gain.linearRampToValueAtTime(1.5, now + 0.01); // Unmute to 1.5x gain over 10ms
-              this.isMuted = false;
-              console.log('[Clerk] Unmuted gain node for audio injection');
-            }
-            
-            // Schedule auto-mute if no more audio is injected for 200ms after buffer is consumed
-            // Shorter timeout to prevent continuous sound from leftover buffer data
-            if (this.muteTimeoutId) {
-              clearTimeout(this.muteTimeoutId);
-            }
-            const self = this;
-            this.muteTimeoutId = setTimeout(() => {
-              // Check if buffer is empty or almost empty
-              if (self.readIndex >= self.audioBuffer.length) {
-                // Buffer consumed - force mute immediately
-                if (!self.isMuted && self.gainNode) {
-                  const now = self.ctx.currentTime;
-                  self.gainNode.gain.cancelScheduledValues(now);
-                  self.gainNode.gain.setValueAtTime(self.gainNode.gain.value, now);
-                  self.gainNode.gain.linearRampToValueAtTime(0.0, now + 0.01);
-                  self.isMuted = true;
-                  console.log('[Clerk] Auto-muted gain node after buffer consumed');
+              const dest = ctx.createMediaStreamDestination();
+              processor.connect(dest);
+              
+              // Teams-specific: Configure track to appear as a valid device
+              const audioTrack = dest.stream.getAudioTracks()[0];
+              if (audioTrack) {
+                // Override getSettings to return device info that Teams expects
+                const originalGetSettings = audioTrack.getSettings.bind(audioTrack);
+                audioTrack.getSettings = function() {
+                  const settings = originalGetSettings();
+                  // Return settings that Teams will accept
+                  return {
+                    ...settings,
+                    deviceId: 'default', // Use 'default' which Teams should recognize
+                    groupId: '',
+                    autoGainControl: true,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                  };
+                };
+                
+                // Override getCapabilities to return proper capabilities
+                const originalGetCapabilities = audioTrack.getCapabilities ? audioTrack.getCapabilities.bind(audioTrack) : null;
+                if (originalGetCapabilities) {
+                  audioTrack.getCapabilities = function() {
+                    const caps = originalGetCapabilities();
+                    return {
+                      ...caps,
+                      autoGainControl: { ideal: true },
+                      echoCancellation: { ideal: true },
+                      noiseSuppression: { ideal: true }
+                    };
+                  };
                 }
               }
-              self.muteTimeoutId = null;
-            }, 200); // Mute after 200ms of no new audio injections
-
-            // Resample from 16kHz (input) to 48kHz (context sampleRate) and apply gain
-            const inRate = 16000;
-            const outRate = this.ctx.sampleRate || 48000;
-            const gain = 1.0; // Apply gain at the gain node instead
-            const ratio = outRate / inRate;
-            const outLen = Math.max(1, Math.floor(samples.length * ratio));
-            const processed = new Array(outLen);
-            
-            let nonZeroCount = 0;
-            let clippedCount = 0;
-            
-            for (let i = 0; i < outLen; i++) {
-              // Linear interpolation for resampling
-              const t = i / ratio;
-              const idx = Math.floor(t);
-              const frac = t - idx;
-              const a = samples[idx] || 0;
-              const b = samples[idx + 1] || a;
-              let value = (a + (b - a) * frac) * gain;
               
-              // Clip to valid range
-              if (value > 1) {
-                value = 1;
-                clippedCount++;
-              } else if (value < -1) {
-                value = -1;
-                clippedCount++;
-              }
+              window.aurrayVirtualMicStream = dest.stream;
+              window.aurrayInjectAudio48k = (samples) => {
+                if (!samples || !samples.length) {
+                  return;
+                }
+                for (let i = 0; i < samples.length; i++) {
+                  buffer.push(samples[i]);
+                }
+              };
               
-              if (Math.abs(value) > 0.001) {
-                nonZeroCount++;
-              }
-              
-              processed[i] = value;
-            }
-
-            // Append to buffer (don't clear it!)
-            this.audioBuffer.push(...processed);
-
-            const preview = processed.slice(0, 5).map(s => s.toFixed(3));
-            console.log('[Clerk] Injected', samples.length, 'samples (resampled to', outLen, '):', {
-              bufferLength: this.audioBuffer.length,
-              readIndex: this.readIndex,
-              nonZeroSamples: nonZeroCount,
-              clippedSamples: clippedCount,
-              firstSamples: preview,
-              hasAudio: nonZeroCount > 0
-            });
-          },
-          
-          test: function(count = 3) {
-            console.log('[Clerk] Testing with', count, 'beeps');
-            const sampleRate = 16000;
-            const duration = 0.3;
-            const silence = 0.2;
-            const freq = 440;
-            const vol = 0.7;
-            for (let beep = 0; beep < count; beep++) {
-              for (let i = 0; i < sampleRate * duration; i++) {
-                this.audioBuffer.push(Math.sin(2 * Math.PI * freq * i / sampleRate) * vol);
-              }
-              for (let i = 0; i < sampleRate * silence; i++) this.audioBuffer.push(0);
-            }
-            console.log('[Clerk] Injected', count, 'beeps, samples:', this.audioBuffer.length);
-          }
-        };
-        
-        window.clerkVirtualMic = VirtualMic;
-        console.log('[Clerk] Virtual microphone setup complete');
-        
-        // Function to decode MP3 audio in the browser
-        window.clerkDecodeAudio = async function(mp3ArrayBuffer) {
-          console.log('[Clerk] Decoding MP3 audio', { size: mp3ArrayBuffer.byteLength });
-          const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-          
-          try {
-            const audioBuffer = await audioContext.decodeAudioData(mp3ArrayBuffer);
-            const samples = Array.from(audioBuffer.getChannelData(0));
-            console.log('[Clerk] Decoded audio successfully', { samples: samples.length, duration: samples.length / audioBuffer.sampleRate });
-            return samples;
-          } catch (error) {
-            console.error('[Clerk] Failed to decode audio', error);
-            throw error;
-          }
-        };
-        
-        // Intercept getUserMedia
-        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices.getUserMedia = async function(constraints) {
-          console.log('[Clerk] getUserMedia called', constraints);
-          if (constraints.audio) {
-            console.log('[Clerk] Returning virtual mic');
-            const stream = window.clerkVirtualMic.getStream();
-            
-            // Monitor the stream to ensure it's being used
-            stream.getAudioTracks().forEach((track, i) => {
-              console.log('[Clerk] Stream track', i, 'state:', {
-                enabled: track.enabled,
-                muted: track.muted,
-                readyState: track.readyState,
-                settings: track.getSettings()
+              virtualStream = dest.stream;
+              console.log("[AURRAY] Teams: Virtual stream created inline", {
+                streamId: dest.stream.id,
+                trackCount: dest.stream.getAudioTracks().length,
+                trackId: audioTrack?.id,
+                hasGetSettings: typeof audioTrack?.getSettings === 'function'
               });
-              
-              // Listen for track events
-              track.addEventListener('ended', () => console.log('[Clerk] Track ended'));
-              track.addEventListener('mute', () => console.log('[Clerk] Track muted'));
-              track.addEventListener('unmute', () => console.log('[Clerk] Track unmuted'));
-            });
-            
-            return stream;
+            }
+          } catch (error) {
+            console.error("[AURRAY] Teams: Failed to create virtual stream inline", error);
           }
-          return originalGetUserMedia(constraints);
+        }
+        
+        if (!virtualStream) {
+          console.warn("[AURRAY] Virtual stream not available, falling back to real mic", contextInfo);
+          return originalGetUserMedia.call(this, constraints);
+        }
+        
+        const trackInfo = {
+          trackCount: virtualStream.getAudioTracks().length,
+          trackIds: virtualStream.getAudioTracks().map(t => t.id),
+          trackStates: virtualStream.getAudioTracks().map(t => t.readyState),
+          trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled)
         };
+        console.log("[AURRAY] Virtual stream available, returning it", {
+          ...contextInfo,
+          ...trackInfo
+        });
+
+        if (!wantsVideo) {
+          const ms = new MediaStream();
+          virtualStream.getAudioTracks().forEach((t) => {
+            ms.addTrack(t);
+          });
+          return ms;
+        }
+
+        const realStream = await originalGetUserMedia.call(this, {
+          ...c,
+          audio: false,
+        });
+
+        const combined = new MediaStream();
+        virtualStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+        realStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+        return combined;
+      };
+    });
+
+    if (!this.config.headless && process.platform === "darwin") {
+      try {
+        await this.page.waitForTimeout(500);
+        const { execSync } = require("child_process");
+        const processName =
+          this.config.browserEngine === "chrome" ? "Google Chrome" : "Chromium";
+        execSync(
+          `osascript -e 'tell application "System Events" to set frontmost of first process whose name contains "${processName}" to true'`,
+          { stdio: "ignore" }
+        );
+      } catch {}
+    }
+
+    this.page.on("console", (msg) => {
+      const text = msg.text();
+      const type = msg.type();
+
+      if (text.includes("[AURRAY]")) {
+        if (type === "error") {
+          this.logger.error("Browser console [AURRAY]", { text });
+        } else {
+          this.logger.info("Browser console [AURRAY]", { text });
+        }
+      } else if (type === "error") {
+        if (
+          !text.includes("Failed to load resource: the server responded with")
+        ) {
+          this.logger.error("Browser console error", { text });
+        }
       }
     });
-    
-    this.platform = createPlatformController(this.config.platform, this.page, this.config, this.logger.child({ subsystem: 'platform' }));
 
-    if (typeof this.platform.beforeNavigate === 'function') {
-      await this.platform.beforeNavigate();
-    }
+    this.page.on("pageerror", (err) => {
+      this.logger.error("Page error", { err: err.message });
+    });
 
-    this.logger.info('Navigating to meeting URL', { url: this.config.meetingUrl });
+    this.page.on("close", () => {
+      this.logger.warn("Page closed");
+      if (!this.shouldStop) {
+        this.shouldStop = true;
+      }
+    });
+
+    this.browser.on("disconnected", () => {
+      this.logger.warn("Browser disconnected");
+      if (!this.shouldStop) {
+        this.shouldStop = true;
+      }
+    });
+  }
+
+  async navigateToMeeting() {
+    this.logger.info("Navigating to meeting URL");
+
     try {
       await this.page.goto(this.config.meetingUrl, {
-        waitUntil: 'networkidle',
-        timeout: this.config.navigationTimeoutMs
+        waitUntil: "networkidle",
+        timeout: this.config.navigationTimeoutMs,
       });
-      
-      // Wait a moment for any redirects/protocol handlers to be blocked
-      await this.page.waitForTimeout(1000);
-      
-      this.logger.info('Navigation completed', { url: this.page.url(), title: await this.page.title().catch(() => '') });
-    } catch (error) {
-      this.logger.warn('Navigation failed, trying with domcontentloaded', { error: error.message });
+    } catch {
       await this.page.goto(this.config.meetingUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
       });
-      
-      // Wait a moment for any redirects/protocol handlers to be blocked
-      await this.page.waitForTimeout(1000);
-      
-      this.logger.info('Navigation completed with fallback', { url: this.page.url(), title: await this.page.title().catch(() => '') });
     }
 
-    if (typeof this.platform.afterNavigate === 'function') {
-      await this.platform.afterNavigate();
+    this.logger.info("Navigation complete", { url: this.page.url() });
+
+    if (this.config.platform === "google_meet") {
+      const currentUrl = this.page.url();
+      if (
+        currentUrl.includes("accounts.google.com") ||
+        currentUrl.includes("signin")
+      ) {
+        this.logger.info(
+          "Google login required - please complete login in browser"
+        );
+        this.logger.info(
+          "After login, the auth state will be saved automatically"
+        );
+
+        await this.page
+          .waitForURL(
+            (url) =>
+              !url.includes("accounts.google.com") && !url.includes("signin"),
+            { timeout: 300000 }
+          )
+          .catch(() => {
+            this.logger.warn("Login timeout - please check browser");
+          });
+
+        await this.saveAuthState();
+      }
     }
   }
 
   async joinMeeting() {
-    this.logger.info('Starting deterministic join flow');
-    
-    // Execute the join flow (beforeJoin -> performJoin -> ensureJoined -> afterJoin)
-    await this.platform.joinMeeting();
-    
-    // Notify backend IMMEDIATELY after join action completes
-    // The join action (performJoin) has already completed, so we're in the meeting
-    this.logger.info('✅ Join action completed - notifying backend immediately');
-    this.isJoined = true;
-    this.lastMeetingActiveTs = Date.now();
-    
-    // Notify backend right away - don't wait for UI verification
-    await this.notifyLifecycle('meeting_joined', {
-      meeting_id: this.config.meetingId,
-      session_id: this.config.sessionId,
-      platform: this.config.platform,
-      bot_name: this.config.botName
-    });
-    await this.notifyMeetingJoined();
-    
-    // Verify UI elements in the background (non-blocking)
-    // This is just for validation, not for notification
-    this.logger.info('Verifying meeting UI elements (non-blocking)');
-    setTimeout(async () => {
-      try {
-        const hasJoined = await this.platform.hasBotJoined();
-        if (hasJoined) {
-          this.logger.info('✅ Meeting UI verification successful');
-        } else {
-          this.logger.warn('⚠️ Meeting UI verification failed - bot may still be joining');
-        }
-      } catch (error) {
-        this.logger.debug('Error verifying meeting UI', { error: error.message });
-      }
-    }, 2000); // Check after 2 seconds
-
-    if (this.config.enableTtsPlayback && this.ttsService) {
-      // Speak immediately after joining
-      this.logger.info('Scheduling initial speech', { delayMs: 0, enableTts: this.config.enableTtsPlayback, hasTtsService: !!this.ttsService });
-      this.scheduleInitialSpeech(0, 'Please introduce yourself');
-    } else {
-      this.logger.warn('TTS not scheduled', { enableTts: this.config.enableTtsPlayback, hasTtsService: !!this.ttsService });
-    }
-  }
-
-  async initializeMedia() {
-    if (!this.config.enableAudioCapture) {
-      this.logger.info('Audio capture disabled by configuration');
-      return;
-    }
-
     try {
-      await this.startAudioCapture();
-      this.logger.info('✅ Audio capture script initialized and active', { 
-        audioCaptureActive: this.audioCaptureActive,
-        hasAudioInput: !!this.audioInputStream,
-        audioInputReadyState: this.audioInputStream?.readyState
-      });
-    } catch (error) {
-      this.logger.warn('Audio capture initialization failed', { error: error.message });
-    }
-  }
+      // Add isOrganizer and status update callback to config for platform controllers
+      const platformConfig = {
+        ...this.config,
+        isOrganizer: this.config.isOrganizer,
+        sendStatusUpdate: this.sendStatusUpdate.bind(this),
+      };
 
-  scheduleInitialSpeech(delayMs, prompt = 'Please introduce yourself') {
-    if (!this.config.enableTtsPlayback || !this.ttsService) {
-      return;
-    }
+      this.platform = createPlatformController(
+        this.config.platform,
+        this.page,
+        platformConfig,
+        this.logger.child({ subsystem: "platform" })
+      );
 
-    const delay = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : 5000;
-    if (this.initialSpeechTimeout) {
-      return;
-    }
-
-    this.initialSpeechTimeout = setTimeout(async () => {
-      this.initialSpeechTimeout = null;
-      try {
-        this.logger.info('Triggering initial TTS playback', { delayMs: delay, prompt });
-        await this.speakLLMResponse(prompt);
-      } catch (error) {
-        this.logger.error('Initial TTS playback failed', { error: error.message });
+      if (this.platform.beforeNavigate) {
+        await this.platform.beforeNavigate();
       }
-    }, delay);
+
+      // Set up virtual microphone BEFORE joining so it's ready when getUserMedia is called
+      await this.setupVirtualMic();
+      
+      // For Teams: Store initial URL to detect navigation
+      let initialUrl = null;
+      if (this.config.platform === 'teams') {
+        initialUrl = this.page.url();
+      }
+      
+      await this.platform.joinMeeting();
+      
+      // For Teams: Re-initialize virtual mic if page navigated to meeting page
+      if (this.config.platform === 'teams') {
+        const currentUrl = this.page.url();
+        const isMeetingPage = currentUrl.includes('light-meetings/launch');
+        const wasLauncherPage = initialUrl && initialUrl.includes('dl/launcher');
+        
+        if (isMeetingPage && wasLauncherPage) {
+          this.logger.info('Teams: Detected navigation to meeting page, re-initializing virtual mic');
+          await this.setupVirtualMic();
+        }
+      }
+      
+      await this.setupAudioCapture();
+    } catch (error) {
+      this.logger.error("Failed to join meeting", {
+        error: error.message,
+        stack: error.stack,
+      });
+      throw error;
+    }
   }
 
-  async startAudioCapture() {
-    await this.page.exposeBinding('clerkEmitAudioFrame', async (_source, payload) => {
-      this.handleAudioFrame(payload);
-    });
-    
-    await this.page.exposeFunction('clerkPlayAudioToMic', async (audioData) => {
-      return this.playAudioToMeeting(audioData);
-    });
+  async connectWebSocket() {
+    return new Promise((resolve, reject) => {
+      const gatewayUrl = new URL(this.config.rtGatewayUrl);
+      const baseUrl = `${gatewayUrl.protocol}//${gatewayUrl.host}`;
+      const wsUrl = `${baseUrl}/ws/bot/${this.config.sessionId}`;
 
-    // Expose binding to send transcripts from Web Speech API
+      this.logger.info("Connecting to audio streaming WebSocket", { url: wsUrl });
 
-    // Inject script directly into the page (works even if page is already loaded)
-    // NOTE: Do NOT overwrite window.clerkVirtualMic - it's already set up in launchBrowser()
-    const audioCaptureScript = `
-      (function setupClerkAudioCapture() {
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextClass) {
-          console.error('AudioContext not supported in this browser');
-          return;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+
+      let isConnected = false; // Track connection state
+      
+      // Set connection timeout - this WebSocket is critical for audio streaming
+      const connectionTimeout = setTimeout(() => {
+        if (!isConnected && ws.readyState !== WebSocket.OPEN) {
+          this.logger.error("Audio WebSocket connection timeout - this is critical for audio streaming");
+          try {
+            ws.close();
+          } catch (e) {
+            // Ignore errors when closing
+          }
+          this.gateway = null;
+          this.gatewayConnected = false;
+          reject(new Error(`Audio WebSocket connection timeout after 15 seconds - cannot stream audio without this connection`));
+        }
+      }, 15000); // 15 second timeout for critical audio WebSocket
+
+      ws.on("open", () => {
+        clearTimeout(connectionTimeout);
+        isConnected = true;
+        this.logger.info("Audio WebSocket connected successfully");
+        this.gateway = ws;
+        this.gatewayConnected = true;
+
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "register",
+              sessionId: this.config.sessionId,
+            })
+          );
+        } catch (error) {
+          this.logger.warn("Failed to send WebSocket registration", {
+            error: error.message,
+          });
+          // Continue anyway
         }
 
-        const context = new AudioContextClass({ sampleRate: 48000 });
-        
-        // Try to capture audio from the page's audio output by hooking into the destination
-        // Create a MediaStreamDestination to capture all audio
-        const captureDestination = context.createMediaStreamDestination();
-        
-        const processor = context.createScriptProcessor(2048, 1, 1);
-        const gain = context.createGain();
-        gain.gain.value = 0; // prevent audio feedback while keeping graph alive
-        
-        // CRITICAL: ScriptProcessorNode MUST be connected to a destination to process audio
-        // Connect processor -> gain -> destination to keep the audio graph active
-        processor.connect(gain);
-        gain.connect(context.destination);
-        
-        // Also try to capture from the page's master AudioContext if we can find it
-        let masterContext = null;
+        this.logger.info("WebSocket ready for audio", {
+          audioFramesReceived: this.audioFrameCount,
+          audioBytesSent: this.audioBytesSent,
+        });
+
+        resolve();
+      });
+
+      ws.on("message", (data) => {
         try {
-          // Look for existing AudioContext instances (Teams might have one)
-          for (let key in window) {
+          if (data instanceof ArrayBuffer || Buffer.isBuffer(data)) {
+            // Log backend speech response
+            const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+            this.speechChunksReceived++;
+            this.speechBytesReceived += buf.length;
+
+            const timeSinceLastLog = Date.now() - this.lastSpeechLogTime;
+            if (timeSinceLastLog >= 5000) {
+              this.logger.info("Backend speech stats", {
+                chunksReceived: this.speechChunksReceived,
+                totalBytesReceived: this.speechBytesReceived,
+                avgChunkSize:
+                  this.speechBytesReceived / this.speechChunksReceived,
+                bytesPerSecond:
+                  (this.speechBytesReceived / timeSinceLastLog) * 1000,
+              });
+              this.lastSpeechLogTime = Date.now();
+            }
+
+            if (this.speechChunksReceived === 1) {
+              this.logger.info("First speech chunk received from backend", {
+                bytes: buf.length,
+              });
+            }
+
+            this.handleAudioChunk(data);
+          } else {
+            this.logger.debug("Received non-audio message from backend", {
+              type: typeof data,
+              dataLength: data?.length,
+            });
+          }
+        } catch (error) {
+          this.logger.warn("Error handling WebSocket message", {
+            error: error.message,
+          });
+          // Continue - don't break on message handling errors
+        }
+      });
+
+      ws.on("error", (error) => {
+        clearTimeout(connectionTimeout);
+        if (!isConnected) {
+          this.logger.error("Audio WebSocket connection error - this is critical", { 
+            error: error.message,
+            url: wsUrl
+          });
+          this.gateway = null;
+          this.gatewayConnected = false;
+          // Reject - audio WebSocket is critical, bot cannot function without it
+          reject(new Error(`Failed to connect audio WebSocket: ${error.message}`));
+        } else {
+          // Connection was established but now has an error - log but don't reject
+          this.logger.warn("Audio WebSocket error after connection", { 
+            error: error.message 
+          });
+        }
+      });
+
+      ws.on("close", (code, reason) => {
+        clearTimeout(connectionTimeout);
+        
+        // Only log warning if connection was already established
+        // If it closes before opening, error handler will have already rejected
+        if (this.gatewayConnected) {
+          this.logger.warn("Audio WebSocket closed after connection", { 
+            code, 
+            reason: reason?.toString() 
+          });
+        }
+        
+        if (this.gateway === ws) {
+          this.gateway = null;
+        }
+        this.gatewayConnected = false;
+        // Don't reject on close after connection - it's normal lifecycle
+      });
+
+      // Store reference only after setting up all handlers
+      // Don't set this.gateway yet - wait for 'open' event
+    });
+  }
+
+  async setupAudioCapture() {
+    try {
+      const client = await this.page.context().newCDPSession(this.page);
+      this.logger.info("CDP session created for audio capture");
+
+      await client.send("Runtime.enable");
+      await client.send("Target.setDiscoverTargets", { discover: true });
+      this.logger.info("CDP Target domain enabled for iframe discovery");
+
+      try {
+        await client.send("WebRTC.enable");
+        this.logger.info("WebRTC domain enabled via CDP");
+
+        client.on("WebRTC.eventSourceStateChanged", (event) => {
+          this.logger.info("WebRTC event source state changed", {
+            peerConnectionId: event.peerConnectionId,
+            eventSource: event.eventSource,
+            state: event.state,
+          });
+        });
+      } catch (e) {
+        this.logger.warn("WebRTC.enable not available, continuing without it", {
+          error: e.message,
+        });
+      }
+
+      await this.page.exposeBinding(
+        "aurrayEmitAudioFrame",
+        async (_source, payload) => {
+          this.handleAudioFrame(payload);
+        }
+      );
+
+      const workletPath = path.resolve(__dirname, "audio-worklet.js");
+      const workletCode = fs.readFileSync(workletPath, "utf8");
+      
+      // For Teams: Use data URL to avoid CSP issues with blob URLs
+      const isTeams = this.config.platform === 'teams';
+      const workletUrlForTeams = isTeams 
+        ? `data:application/javascript;base64,${Buffer.from(workletCode).toString('base64')}`
+        : null;
+
+      const audioCaptureScript = `
+        (async function() {
+          const contextInfo = {
+            url: window.location.href,
+            origin: window.location.origin,
+            frameName: window.name || 'main',
+            isTopFrame: window === window.top,
+            isTeams: ${isTeams ? 'true' : 'false'}
+          };
+          console.log('[AURRAY] Audio capture script starting', contextInfo);
+          
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextClass) {
+            console.warn('[AURRAY] AudioContext not available', contextInfo);
+            return;
+          }
+
+          let context = null;
+          let workletNode = null;
+          const sources = new Map();
+          const connections = new Set();
+
+          const workletCode = ${JSON.stringify(workletCode)};
+          
+          // Teams: Use data URL, others: Use blob URL
+          let workletUrl;
+          if (${isTeams ? 'true' : 'false'}) {
+            workletUrl = ${workletUrlForTeams ? JSON.stringify(workletUrlForTeams) : 'null'};
+            console.log('[AURRAY] Teams: Using data URL for worklet', {
+              ...contextInfo,
+              workletUrl: workletUrl ? workletUrl.substring(0, 100) + '...' : 'null'
+            });
+          } else {
+            console.log('[AURRAY] Creating worklet blob', {
+              ...contextInfo,
+              workletCodeLength: workletCode.length
+            });
+            const workletBlob = new Blob([workletCode], { type: 'application/javascript' });
+            workletUrl = URL.createObjectURL(workletBlob);
+            console.log('[AURRAY] Worklet blob URL created', {
+              ...contextInfo,
+              workletUrl: workletUrl.substring(0, 100) + '...',
+              blobSize: workletBlob.size
+            });
+          }
+
+          const attachRemoteTrack = async (track, forceAttach = false) => {
+            if (!track || track.kind !== 'audio' || sources.has(track.id)) {
+              return false;
+            }
+
+            // If forceAttach is true (e.g., from audio element), skip deviceId check
+            if (!forceAttach) {
+              const trackSettings = track.getSettings ? track.getSettings() : {};
+              const hasDeviceId = !!trackSettings.deviceId;
+              if (hasDeviceId) {
+                console.log('[AURRAY] Skipping local track:', track.id);
+                return false;
+              }
+            }
+
             try {
-              const value = window[key];
-              if (value instanceof AudioContext || value instanceof webkitAudioContext) {
-                if (!masterContext || value.state === 'running') {
-                  masterContext = value;
+              await initAudioContext();
+              
+              const stream = new MediaStream([track]);
+              const sourceNode = context.createMediaStreamSource(stream);
+              sourceNode.connect(workletNode);
+              
+              sources.set(track.id, { stream, sourceNode, track });
+              console.log('[AURRAY] Attached remote audio track via CDP WebRTC:', track.id);
+              return true;
+            } catch (error) {
+              console.error('[AURRAY] Failed to attach track:', error, track.id);
+              return false;
+            }
+          };
+
+          const initAudioContext = async () => {
+            if (context) {
+              console.log('[AURRAY] AudioContext already initialized', {
+                ...contextInfo,
+                state: context.state,
+                sampleRate: context.sampleRate
+              });
+              return context;
+            }
+            
+            console.log('[AURRAY] Creating new AudioContext', contextInfo);
+            context = new AudioContextClass({ sampleRate: 48000 });
+            console.log('[AURRAY] AudioContext created', {
+              ...contextInfo,
+              state: context.state,
+              sampleRate: context.sampleRate
+            });
+            
+            try {
+              if (!workletUrl) {
+                throw new Error('Worklet URL not available');
+              }
+              
+              console.log('[AURRAY] Adding AudioWorklet module', {
+                ...contextInfo,
+                workletUrl: workletUrl.substring(0, 100) + '...',
+                audioWorkletAvailable: !!context.audioWorklet,
+                isDataUrl: workletUrl.startsWith('data:')
+              });
+              await context.audioWorklet.addModule(workletUrl);
+              console.log('[AURRAY] AudioWorklet module added successfully', contextInfo);
+              
+              console.log('[AURRAY] Creating AudioWorkletNode', contextInfo);
+              workletNode = new AudioWorkletNode(context, 'audio-capture-processor');
+              console.log('[AURRAY] AudioWorkletNode created', {
+                ...contextInfo,
+                nodeState: workletNode ? 'created' : 'failed'
+              });
+              
+              workletNode.port.onmessage = (event) => {
+                try {
+                  const data = event.data;
+                  if (data.samples && data.samples.length > 0 && typeof window.aurrayEmitAudioFrame === 'function') {
+                    window.aurrayEmitAudioFrame({
+                      samples: data.samples,
+                      rms: data.rms || 0,
+                      sampleCount: data.sampleCount || data.samples.length
+                    });
+                  }
+                } catch (e) {
+                  console.error('[AURRAY] Error in worklet onmessage:', e);
                 }
+              };
+              
+              const gain = context.createGain();
+              gain.gain.value = 0;
+              workletNode.connect(gain);
+              gain.connect(context.destination);
+              
+              console.log('[AURRAY] AudioWorklet initialized via CDP WebRTC', {
+                ...contextInfo,
+                contextState: context.state
+              });
+            } catch (error) {
+              console.error('[AURRAY] Failed to initialize AudioWorklet', {
+                ...contextInfo,
+                error: error.message,
+                errorName: error.name,
+                errorStack: error.stack?.substring(0, 500),
+                workletUrl: workletUrl ? workletUrl.substring(0, 100) + '...' : 'null',
+                isDataUrl: workletUrl ? workletUrl.startsWith('data:') : false,
+                audioWorkletAvailable: !!context.audioWorklet
+              });
+              throw error;
+            }
+            
+            return context;
+          };
+
+          const hookRTCPeerConnection = (pc) => {
+            if (connections.has(pc)) return;
+            connections.add(pc);
+            
+            console.log('[AURRAY] Hooking RTCPeerConnection via CDP WebRTC, receivers:', pc.getReceivers().length);
+            
+            pc.addEventListener('track', async (event) => {
+              if (event.track && event.track.kind === 'audio') {
+                console.log('[AURRAY] Track event received via CDP WebRTC:', event.track.id);
+                if (event.track.readyState === 'live') {
+                  await attachRemoteTrack(event.track);
+                } else {
+                  event.track.addEventListener('started', async () => {
+                    console.log('[AURRAY] Track started via CDP WebRTC:', event.track.id);
+                    await attachRemoteTrack(event.track);
+                  });
+                }
+              }
+            });
+
+            const checkReceivers = async () => {
+              try {
+                const receivers = pc.getReceivers();
+                for (const receiver of receivers) {
+                  if (receiver.track && receiver.track.kind === 'audio' && receiver.track.readyState === 'live') {
+                    await attachRemoteTrack(receiver.track);
+                  }
+                }
+              } catch (e) {
+                console.warn('[AURRAY] Error checking receivers:', e);
+              }
+            };
+
+            checkReceivers();
+            
+            pc.addEventListener('connectionstatechange', () => {
+              if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+                connections.delete(pc);
+              } else if (pc.connectionState === 'connected' || pc.connectionState === 'connecting') {
+                setTimeout(() => {
+                  try {
+                    checkReceivers();
+                  } catch (e) {
+                    console.warn('[AURRAY] Error checking receivers on state change:', e);
+                  }
+                }, 1000);
+              }
+            });
+          };
+
+          window.aurrayHookConnection = (pc) => {
+            if (pc instanceof RTCPeerConnection) {
+              hookRTCPeerConnection(pc);
+              return true;
+            }
+            return false;
+          };
+
+          // Expose attachRemoteTrack globally so it can be called from audio element capture
+          window.aurrayAttachRemoteTrack = attachRemoteTrack;
+
+          window.__aurrayAudioCaptureState = { context: null, workletNode: null, sources, connections };
+          window.aurrayStartAudioCapture = async () => {
+            await initAudioContext();
+            if (context.state === 'suspended') {
+              await context.resume();
+            }
+            console.log('[AURRAY] Audio capture started via CDP WebRTC, context state:', context.state, 'sources:', sources.size, 'connections:', connections.size);
+            return true;
+          };
+
+          await window.aurrayStartAudioCapture();
+        })();
+      `;
+
+      // Inject script via CDP Runtime.evaluate to execute immediately on current page
+      // This is better than addInitScript which only runs on new page loads
+      try {
+        this.logger.info(
+          "Injecting audio capture script via CDP Runtime.evaluate"
+        );
+        await client.send("Runtime.evaluate", {
+          expression: audioCaptureScript,
+          awaitPromise: true,
+        });
+        this.logger.info(
+          "Audio capture script injected and initialized via CDP"
+        );
+      } catch (e) {
+        this.logger.error("Failed to inject audio capture script via CDP", {
+          error: e.message,
+          stack: e.stack,
+        });
+        throw e;
+      }
+
+      // Verify the script is ready
+      const isReady = await this.page
+        .evaluate(() => {
+          return typeof window.aurrayStartAudioCapture === "function";
+        })
+        .catch(() => false);
+
+      if (isReady) {
+        this.logger.info("Audio capture script verified and ready");
+      } else {
+        this.logger.warn("Audio capture script may not be fully initialized");
+      }
+
+      const searchInContext = async (cdpClient, contextName) => {
+        try {
+          const result = await cdpClient.send("Runtime.evaluate", {
+            expression: `
+              (function() {
+                const connections = [];
+                let found = 0;
+                
+                try {
+                  if (window.RTCPeerConnection) {
+                    const keys = Object.keys(window);
+                    for (let i = 0; i < keys.length && i < 1000; i++) {
+                      try {
+                        const key = keys[i];
+              const value = window[key];
+                        if (value instanceof RTCPeerConnection) {
+                          connections.push(key);
+                          found++;
               }
             } catch (e) {}
           }
-        } catch (e) {}
-        
-        // If we found a master context, try to hook into it
-        if (masterContext && masterContext !== context) {
-          console.log('[Clerk] Found master AudioContext, attempting to intercept audio');
-          
-          // Create a script processor on the master context to capture all audio
-          const masterProcessor = masterContext.createScriptProcessor(2048, 1, 1);
-          
-          masterProcessor.onaudioprocess = (event) => {
-            if (!captureState.active) return;
-            
-            const input = event.inputBuffer.getChannelData(0);
-            const output = Array.from(input);
-            
-            const hasAudio = output.some(sample => Math.abs(sample) > 0.001);
-            
-            if (hasAudio) {
-              captureState.sequence = (captureState.sequence + 1) % Number.MAX_SAFE_INTEGER;
-              
-              if (captureState.sequence <= 5) {
-                console.log('[Clerk] Master AudioContext audio captured', {
-                  sequence: captureState.sequence,
-                  samples: output.length,
-                  maxSample: Math.max(...output.map(Math.abs))
-                });
-              }
-              
-              window.clerkEmitAudioFrame({
-                sequence: captureState.sequence,
-                timestamp: performance.now(),
-                samples: output
-              });
-            }
-          };
-          
-          // Try to connect to destination (this might not work due to security, but worth trying)
-          try {
-            // Create an oscillator to keep the processor active
-            const osc = masterContext.createOscillator();
-            osc.frequency.setValueAtTime(0.001, masterContext.currentTime);
-            osc.connect(masterProcessor);
-            osc.start();
-            masterProcessor.connect(masterContext.destination);
-            
-            console.log('[Clerk] Hooked into master AudioContext');
-          } catch (error) {
-            console.log('[Clerk] Could not hook into master AudioContext:', error.message);
-          }
-        }
-
-        const captureState = {
-          context,
-          processor,
-          gain,
-          active: false,
-          sequence: 0,
-          sources: new Map(),
-          audioQueue: []
-        };
-        
-        // CRITICAL: Do NOT overwrite window.clerkVirtualMic if it already exists!
-        // The virtual mic is already set up in launchBrowser() and must be preserved
-        if (!window.clerkVirtualMic) {
-          console.warn('[Clerk] Virtual mic not found! It should have been set up earlier.');
-        } else {
-          console.log('[Clerk] Virtual mic already exists, preserving it for audio injection');
-        }
-
-        const attachTrack = (track) => {
-          if (!track || track.kind !== 'audio' || captureState.sources.has(track.id)) {
-            if (track && track.kind === 'audio') {
-              console.log('[Clerk] Skipping track (already attached or invalid)', {
-                trackId: track.id,
-                alreadyAttached: captureState.sources.has(track.id),
-                enabled: track.enabled,
-                readyState: track.readyState
-              });
-            }
-            return;
-          }
-
-          console.log('[Clerk] ✅ Attaching remote audio track', { 
-            trackId: track.id, 
-            enabled: track.enabled, 
-            muted: track.muted,
-            readyState: track.readyState,
-            label: track.label || 'unknown'
-          });
-          
-          try {
-            const stream = new MediaStream([track]);
-            const sourceNode = context.createMediaStreamSource(stream);
-            
-            // CRITICAL FIX: Connect source to processor directly for capture
-            // Also connect to gain for output chain (but gain=0 prevents feedback)
-            sourceNode.connect(captureState.processor);  // Direct connection for capture
-            sourceNode.connect(captureState.gain);      // Output chain (muted)
-            
-            captureState.sources.set(track.id, { stream, sourceNode, track });
-            
-            console.log('[Clerk] ✅ Remote track attached and connected to processor', {
-              trackId: track.id,
-              sourceCount: captureState.sources.size,
-              processorConnected: !!processor
-            });
-            
-            // Log track state periodically to monitor
-            setInterval(() => {
-              if (track.readyState === 'live' && track.enabled) {
-                console.log('[Clerk] Track still active', {
-                  trackId: track.id,
-                  enabled: track.enabled,
-                  muted: track.muted,
-                  readyState: track.readyState
-                });
-              }
-            }, 10000); // Every 10 seconds
-          } catch (error) {
-            console.error('[Clerk] ❌ Failed to attach track', {
-              trackId: track.id,
-              error: error.message
-            });
-          }
-        };
-
-        // Intercept RTCPeerConnection track events to capture remote audio
-        const originalAddEventListener = RTCPeerConnection.prototype.addEventListener;
-        RTCPeerConnection.prototype.addEventListener = function patchedAddEventListener(type, listener, options) {
-          if (type === 'track' && typeof listener === 'function') {
-            const wrapped = function wrappedTrackListener(event) {
-              console.log('[Clerk] RTCPeerConnection track event intercepted', {
-                trackId: event.track?.id,
-                kind: event.track?.kind,
-                enabled: event.track?.enabled
-              });
-              try {
-                attachTrack(event.track);
-              } catch (error) {
-                console.error('clerkAttachRemoteTrack error', error);
-              }
-              return listener.call(this, event);
-            };
-            return originalAddEventListener.call(this, type, wrapped, options);
-          }
-          return originalAddEventListener.call(this, type, listener, options);
-        };
-        
-        // Also intercept getReceivers() which Teams might use
-        const originalGetReceivers = RTCPeerConnection.prototype.getReceivers;
-        if (originalGetReceivers) {
-          RTCPeerConnection.prototype.getReceivers = function() {
-            const receivers = originalGetReceivers.call(this);
-            receivers.forEach(receiver => {
-              if (receiver.track && receiver.track.kind === 'audio') {
-                console.log('[Clerk] Found audio receiver track', {
-                  trackId: receiver.track.id,
-                  enabled: receiver.track.enabled
-                });
-                attachTrack(receiver.track);
-              }
-            });
-            return receivers;
-          };
-        }
-        
-        // Intercept addTrack/removeTrack methods
-        const originalAddTrack = RTCPeerConnection.prototype.addTrack;
-        if (originalAddTrack) {
-          RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
-            console.log('[Clerk] RTCPeerConnection.addTrack called', {
-              trackId: track?.id,
-              kind: track?.kind
-            });
-            if (track && track.kind === 'audio') {
-              attachTrack(track);
-            }
-            return originalAddTrack.call(this, track, ...streams);
-          };
-        }
-        
-        // Monitor MediaStreamTrack events directly
-        const originalMediaStreamTrackAddEventListener = MediaStreamTrack.prototype.addEventListener;
-        MediaStreamTrack.prototype.addEventListener = function(type, listener, options) {
-          if (type === 'ended' || type === 'mute' || type === 'unmute') {
-            const wrapped = function wrappedEventListener(event) {
-              if (this.kind === 'audio' && !captureState.sources.has(this.id)) {
-                console.log('[Clerk] MediaStreamTrack event detected', {
-                  type: type,
-                  trackId: this.id,
-                  kind: this.kind,
-                  enabled: this.enabled
-                });
-                attachTrack(this);
-              }
-              return listener.call(this, event);
-            };
-            return originalMediaStreamTrackAddEventListener.call(this, type, wrapped, options);
-          }
-          return originalMediaStreamTrackAddEventListener.call(this, type, listener, options);
-        };
-
-        const onTrackDescriptor = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'ontrack');
-        if (onTrackDescriptor && onTrackDescriptor.configurable) {
-          Object.defineProperty(RTCPeerConnection.prototype, 'ontrack', {
-            set(handler) {
-              if (typeof handler !== 'function') {
-                return onTrackDescriptor.set?.call(this, handler);
-              }
-              const wrapped = function wrappedOnTrack(event) {
-                try {
-                  attachTrack(event.track);
-                } catch (error) {
-                  console.error('clerkAttachRemoteTrack error', error);
+                  }
+                } catch (e) {
+                  console.warn('[AURRAY] Error searching window:', e);
                 }
-                return handler.call(this, event);
-              };
-              return onTrackDescriptor.set?.call(this, wrapped);
-            },
-            get() {
-              return onTrackDescriptor.get?.call(this);
-            }
+                
+                return { found, connections, windowKeys: Object.keys(window).length };
+              })()
+            `,
+            returnByValue: true,
           });
-        }
 
-        processor.onaudioprocess = (event) => {
-          if (!captureState.active) {
-            // Log occasionally if capture is inactive
-            if (captureState.sequence % 1000 === 0) {
-              console.warn('[Clerk] Audio processor received frame but capture is inactive', {
-                sequence: captureState.sequence,
-                sourceCount: captureState.sources.size
+          if (result.result && result.result.value) {
+            const data = result.result.value;
+            if (data.found > 0) {
+              this.logger.info(
+                `CDP Runtime.evaluate found RTCPeerConnections in ${contextName}`,
+                {
+                  found: data.found,
+                  connectionKeys: data.connections,
+                  totalWindowKeys: data.windowKeys,
+                }
+              );
+
+              // Inject hooking function into this context if not already there
+              await cdpClient
+                .send("Runtime.evaluate", {
+                  expression: audioCaptureScript,
+                  awaitPromise: true,
+                })
+                .catch(() => {
+                  // Script might already be injected, that's okay
+                });
+
+              for (const key of data.connections) {
+                try {
+                  const hookResult = await cdpClient.send("Runtime.evaluate", {
+                    expression: `
+                      (function() {
+                        const pc = window['${key}'];
+                        if (pc instanceof RTCPeerConnection && window.aurrayHookConnection) {
+                          window.aurrayHookConnection(pc);
+                          return true;
+                        }
+                        return false;
+                      })()
+                    `,
+                    returnByValue: true,
+                  });
+                  this.logger.info(
+                    `CDP Runtime.evaluate: Hooked connection in ${contextName}`,
+                    { key, success: hookResult.result?.value }
+                  );
+                } catch (e) {
+                  this.logger.warn(
+                    `Error hooking connection in ${contextName}`,
+                    { key, error: e.message }
+                  );
+                }
+              }
+
+              return data.found;
+            }
+          }
+          return 0;
+        } catch (e) {
+          this.logger.warn(`Error searching ${contextName}`, {
+            error: e.message,
+          });
+          return 0;
+        }
+      };
+
+      const searchForAudioElements = async () => {
+        try {
+          // this.logger.info("Audio Element: Searching for <audio> elements");
+
+          // Search for audio elements in main page and all frames
+          const allFrames = [this.page.mainFrame(), ...this.page.frames()];
+          let audioElementsFound = 0;
+
+          for (const frame of allFrames) {
+            try {
+              const audioInfo = await frame.evaluate(() => {
+                const audioElements = Array.from(
+                  document.querySelectorAll("audio")
+                );
+                return audioElements.map((audio, index) => {
+                  const hasSrc = !!audio.src;
+                  const hasSrcObject = !!audio.srcObject;
+                  const isPlaying =
+                    !audio.paused && audio.currentTime > 0 && !audio.ended;
+                  const volume = audio.volume;
+                  const muted = audio.muted;
+
+                  return {
+                    index,
+                    hasSrc,
+                    hasSrcObject,
+                    isPlaying,
+                    volume,
+                    muted,
+                    src: audio.src || "",
+                    id: audio.id || "",
+                    className: audio.className || "",
+                  };
+                });
+              });
+
+              if (audioInfo && audioInfo.length > 0) {
+                // this.logger.info(`Audio Element: Found ${audioInfo.length} <audio> elements in ${frame === this.page.mainFrame() ? 'main frame' : 'iframe'}`, {
+                //   frameUrl: frame.url(),
+                //   audioElements: audioInfo
+                // });
+
+                // Try to capture audio from these elements
+                for (const audioEl of audioInfo) {
+                  try {
+                    // Inject audio capture for this audio element
+                    // First ensure the audio capture script is injected in this frame
+                    if (frame !== this.page.mainFrame()) {
+                      await frame.evaluate(audioCaptureScript).catch(() => {
+                        // Script might already be injected
+                      });
+                      // Wait a bit for script to initialize
+                      await frame
+                        .waitForFunction(
+                          () =>
+                            typeof window.aurrayAttachRemoteTrack ===
+                            "function",
+                          { timeout: 3000 }
+                        )
+                        .catch(() => {});
+                    }
+
+                    const captured = await frame.evaluate(
+                      async (audioIndex) => {
+                        const audioElements = Array.from(
+                          document.querySelectorAll("audio")
+                        );
+                        const audio = audioElements[audioIndex];
+
+                        if (!audio) return false;
+
+                        // Check if we already have a capture for this audio element
+                        if (audio.__aurrayAudioCapture) return true;
+
+                        try {
+                          // Instead of createMediaElementSource (which fails if already connected),
+                          // capture directly from the srcObject MediaStream
+                          if (
+                            audio.srcObject &&
+                            audio.srcObject instanceof MediaStream
+                          ) {
+                            const stream = audio.srcObject;
+                            const audioTracks = stream.getAudioTracks();
+
+                            if (
+                              audioTracks.length > 0 &&
+                              window.aurrayAttachRemoteTrack
+                            ) {
+                              // Try to attach each audio track
+                              // Force attach since these are from audio elements (definitely remote)
+                              for (const track of audioTracks) {
+                                const attached =
+                                  await window.aurrayAttachRemoteTrack(
+                                    track,
+                                    true
+                                  );
+                                if (attached) {
+                                  audio.__aurrayAudioCapture = {
+                                    stream,
+                                    track,
+                                  };
+                                  console.log(
+                                    "[AURRAY] Capturing audio from <audio> element srcObject:",
+                                    audioIndex,
+                                    track.id
+                                  );
+                                  return true;
+                                }
+                              }
+                            }
+                          }
+                        } catch (e) {
+                          console.error(
+                            "[AURRAY] Error capturing audio from element:",
+                            e
+                          );
+                          return false;
+                        }
+
+                        return false;
+                      },
+                      audioEl.index
+                    );
+
+                    if (captured) {
+                      // this.logger.info('Audio Element: Successfully captured audio from element', { audioIndex: audioEl.index });
+                    }
+
+                    audioElementsFound++;
+                  } catch (e) {
+                    this.logger.warn("Error capturing audio from element", {
+                      audioIndex: audioEl.index,
+                      error: e.message,
+                    });
+                  }
+                }
+              }
+            } catch (e) {
+              this.logger.warn("Error searching for audio elements in frame", {
+                frameUrl: frame.url(),
+                error: e.message,
               });
             }
-            return;
           }
 
-          const input = event.inputBuffer.getChannelData(0);
-          const output = Array.from(input);
-          
-          // Check if there's actual audio data
-          const maxSample = Math.max(...output.map(Math.abs));
-          const hasAudio = maxSample > 0.001;
-          
-          captureState.sequence = (captureState.sequence + 1) % Number.MAX_SAFE_INTEGER;
-          
-          // Log first few frames and frames with audio to debug
-          if (captureState.sequence <= 10 || hasAudio) {
-            console.log('[Clerk] Audio processor event', {
-              sequence: captureState.sequence,
-              samples: output.length,
-              hasAudio: hasAudio,
-              maxSample: maxSample.toFixed(6),
-              sourceCount: captureState.sources.size,
-              active: captureState.active
-            });
-          }
-          
-          // Log periodically to confirm processor is running
-          if (captureState.sequence % 500 === 0) {
-            console.log('[Clerk] Audio processor running', {
-              sequence: captureState.sequence,
-              sourceCount: captureState.sources.size,
-              active: captureState.active,
-              hasSources: captureState.sources.size > 0
-            });
-          }
-          
-          window.clerkEmitAudioFrame({
-            sequence: captureState.sequence,
-            timestamp: performance.now(),
-            samples: output
+          // this.logger.info('Audio Element: Search complete', { audioElementsFound });
+          return audioElementsFound;
+        } catch (e) {
+          this.logger.warn("Error in audio element search", {
+            error: e.message,
+            stack: e.stack,
           });
-        };
+          return 0;
+        }
+      };
 
-        window.__clerkAudioCaptureState = captureState;
-        window.clerkAttachRemoteTrack = attachTrack;
+      const searchForConnections = async () => {
+        try {
+          // this.logger.info(
+          //   "CDP Target: Starting connection search in all contexts"
+          // );
 
-        // Poll for existing RTCPeerConnections and their tracks
-        const pollForAudioTracks = () => {
-          try {
-            // Find all RTCPeerConnection instances
-            const connections = [];
-            for (let key in window) {
+          // Search main window
+          const mainFound = await searchInContext(client, "main window");
+
+          // Get all targets (including iframes)
+          const targetsResult = await client.send("Target.getTargets");
+          const targets = targetsResult.targetInfos || [];
+
+          // this.logger.info("CDP Target: Found targets", {
+          //   count: targets.length,
+          // });
+
+          let totalFound = mainFound;
+
+          // Also search for audio elements
+          const audioFound = await searchForAudioElements();
+
+          // Search each iframe target using Target.attachToTarget
+          const iframeSessions = new Map();
+
+          for (const target of targets) {
+            if (target.type === "iframe" && target.targetId) {
               try {
-                const value = window[key];
-                if (value instanceof RTCPeerConnection) {
-                  connections.push(value);
-                  // Check receivers
-                  const receivers = value.getReceivers();
-                  receivers.forEach(receiver => {
-                    if (receiver.track && receiver.track.kind === 'audio' && receiver.track.readyState === 'live') {
-                      console.log('[Clerk] Polling found audio receiver track', {
-                        trackId: receiver.track.id,
-                        enabled: receiver.track.enabled
-                      });
-                      attachTrack(receiver.track);
-                    }
+                this.logger.info("CDP Target: Attaching to iframe", {
+                  targetId: target.targetId,
+                  url: target.url,
+                });
+
+                const attachResult = await client.send(
+                  "Target.attachToTarget",
+                  {
+                    targetId: target.targetId,
+                    flatten: true,
+                  }
+                );
+
+                if (attachResult.sessionId) {
+                  // Create a new CDP client for this iframe session
+                  // Note: Playwright's CDP client doesn't directly support creating sessions from session IDs
+                  // So we'll use the main client but with the attached session context
+                  // For now, let's try using Runtime.evaluate with the session
+                  this.logger.info("CDP Target: Attached to iframe", {
+                    targetId: target.targetId,
+                    sessionId: attachResult.sessionId,
                   });
+
+                  // Store session ID for potential future use
+                  iframeSessions.set(target.targetId, attachResult.sessionId);
+
+                  // Try to search in this iframe using the main client
+                  // We'll need to use a different approach since we can't easily create a new CDP client
+                  // Let's use Playwright's page.frames() instead
                 }
               } catch (e) {
-                // Ignore access errors
+                this.logger.warn("Error attaching to iframe target", {
+                  targetId: target.targetId,
+                  error: e.message,
+                });
               }
             }
-            
-            // Also check for any MediaStreamTracks in the document
-            if (document.querySelectorAll) {
-              // Look for audio/video elements that might have tracks
-              const mediaElements = document.querySelectorAll('audio, video');
-              mediaElements.forEach(element => {
-                if (element.srcObject instanceof MediaStream) {
-                  element.srcObject.getAudioTracks().forEach(track => {
-                    if (track.readyState === 'live') {
-                      console.log('[Clerk] Polling found audio track in media element', {
-                        trackId: track.id
-                      });
-                      attachTrack(track);
-                    }
-                  });
-                }
-              });
-            }
-          } catch (error) {
-            console.error('[Clerk] Error polling for audio tracks', error);
           }
-        };
-        
-        // Watch for new audio/video elements being added to the DOM
-        const audioObserver = new MutationObserver((mutations) => {
-          mutations.forEach((mutation) => {
-            mutation.addedNodes.forEach((node) => {
-              if (node.nodeType === 1) { // Element node
-                // Check if it's an audio/video element
-                if (node.tagName === 'AUDIO' || node.tagName === 'VIDEO') {
-                  console.log('[Clerk] New audio/video element detected', {
-                    tagName: node.tagName,
-                    hasSrcObject: !!node.srcObject
-                  });
-                  
-                  if (node.srcObject instanceof MediaStream) {
-                    node.srcObject.getAudioTracks().forEach(track => {
-                      console.log('[Clerk] Found audio track in new element', {
-                        trackId: track.id
-                      });
-                      attachTrack(track);
-                    });
-                  }
-                  
-                  // Watch for srcObject changes
-                  const srcObjectDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
-                  if (srcObjectDescriptor && srcObjectDescriptor.set) {
-                    const originalSet = srcObjectDescriptor.set;
-                    Object.defineProperty(node, 'srcObject', {
-                      set: function(value) {
-                        originalSet.call(this, value);
-                        if (value instanceof MediaStream) {
-                          value.getAudioTracks().forEach(track => {
-                            console.log('[Clerk] Audio track set on element', {
-                              trackId: track.id
-                            });
-                            attachTrack(track);
-                          });
+
+          // Also try searching iframes using Playwright's page.frames()
+          try {
+            const frames = this.page.frames();
+            // this.logger.info("Playwright: Found frames", {
+            //   count: frames.length,
+            // });
+
+            for (let i = 0; i < frames.length; i++) {
+              const frame = frames[i];
+              if (frame !== this.page.mainFrame() && frame.url()) {
+                try {
+                  // this.logger.info('Playwright: Searching iframe via frame.evaluate', { frameUrl: frame.url(), frameIndex: i });
+
+                  const frameResult = await frame.evaluate(() => {
+                    const connections = [];
+                    let found = 0;
+
+                    try {
+                      if (window.RTCPeerConnection) {
+                        const keys = Object.keys(window);
+                        for (let i = 0; i < keys.length && i < 1000; i++) {
+                          try {
+                            const key = keys[i];
+                            const value = window[key];
+                            if (value instanceof RTCPeerConnection) {
+                              connections.push(key);
+                              found++;
+                            }
+                          } catch (e) {}
                         }
-                      },
-                      get: srcObjectDescriptor.get
+                      }
+                    } catch (e) {
+                      console.warn(
+                        "[AURRAY] Error searching iframe window:",
+                        e
+                      );
+                    }
+
+                    return {
+                      found,
+                      connections,
+                      windowKeys: Object.keys(window).length,
+                    };
+                  });
+
+                  if (frameResult && frameResult.found > 0) {
+                    this.logger.info(
+                      "Playwright: Found RTCPeerConnections in iframe",
+                      {
+                        frameUrl: frame.url(),
+                        found: frameResult.found,
+                        connectionKeys: frameResult.connections,
+                      }
+                    );
+
+                    // Inject hooking script into iframe
+                    await frame.evaluate(audioCaptureScript).catch((e) => {
+                      this.logger.warn("Error injecting script into iframe", {
+                        frameUrl: frame.url(),
+                        error: e.message,
+                      });
                     });
+
+                    // Hook connections in iframe
+                    for (const key of frameResult.connections) {
+                      try {
+                        const hooked = await frame.evaluate((connKey) => {
+                          const pc = window[connKey];
+                          if (
+                            pc instanceof RTCPeerConnection &&
+                            window.aurrayHookConnection
+                          ) {
+                            window.aurrayHookConnection(pc);
+                            return true;
+                          }
+                          return false;
+                        }, key);
+
+                        if (hooked) {
+                          this.logger.info(
+                            "Playwright: Hooked connection in iframe",
+                            { frameUrl: frame.url(), key }
+                          );
+                          totalFound++;
+                        }
+                      } catch (e) {
+                        this.logger.warn("Error hooking connection in iframe", {
+                          frameUrl: frame.url(),
+                          key,
+                          error: e.message,
+                        });
+                      }
+                    }
                   }
+                } catch (e) {
+                  this.logger.warn("Error searching iframe via Playwright", {
+                    frameUrl: frame.url(),
+                    error: e.message,
+                  });
                 }
               }
-            });
-          });
-        });
-        
-        // Start observing
-        audioObserver.observe(document.body || document.documentElement, {
-          childList: true,
-          subtree: true
-        });
-        
-        console.log('[Clerk] MutationObserver started to watch for audio/video elements');
-        
-        // Poll immediately and then periodically
-        pollForAudioTracks();
-        setInterval(pollForAudioTracks, 2000); // Poll every 2 seconds
-        
-        window.clerkStartAudioCapture = () => {
-          captureState.active = true;
-          if (context.state === 'suspended') {
-            context.resume().catch((error) => console.error('Failed to resume AudioContext', error));
-          }
-          
-          // Immediately poll for tracks
-          pollForAudioTracks();
-          
-          return true;
-        };
-
-        window.clerkStopAudioCapture = () => {
-          captureState.active = false;
-          captureState.sources.forEach(({ sourceNode, stream }) => {
-            try {
-              sourceNode.disconnect();
-            } catch (error) {
-              console.error('Failed to disconnect source node', error);
             }
-            stream.getTracks().forEach((track) => track.stop());
+          } catch (e) {
+            this.logger.warn("Error getting frames from Playwright", {
+              error: e.message,
+            });
+          }
+
+          // this.logger.info('CDP Target: Connection search complete', { totalFound, audioElementsFound: audioFound });
+        } catch (e) {
+          this.logger.warn("Error in CDP Target search", {
+            error: e.message,
+            stack: e.stack,
           });
-          captureState.sources.clear();
-          
-          return true;
-        };
-      })();
-    `;
+        }
+      };
 
-    // Also add as init script for future navigations
-    await this.page.addInitScript(audioCaptureScript);
-    
-    // Inject script directly into current page (if already loaded)
-    await this.page.evaluate(audioCaptureScript);
-    
-    // Wait for the function to be available (with retry)
-    // Note: clerkEmitAudioFrame is an exposed binding, not a function on window
-    let attempts = 0;
-    const maxAttempts = 10;
-    while (attempts < maxAttempts) {
-      const isReady = await this.page.evaluate(() => {
-        return typeof window.clerkStartAudioCapture === 'function';
+      setTimeout(async () => {
+        this.logger.info(
+          "CDP Runtime.evaluate: Starting initial connection search"
+        );
+        await searchForConnections();
+        this.logger.info(
+          "CDP Runtime.evaluate: Setting up periodic search (every 10s)"
+        );
+        const searchInterval = setInterval(async () => {
+          try {
+            await searchForConnections();
+          } catch (e) {
+            this.logger.warn("Error in CDP connection search interval", {
+              error: e.message,
+            });
+            clearInterval(searchInterval);
+          }
+        }, 10000);
+      }, 3000);
+
+      this.logger.info("CDP Runtime.evaluate-based audio capture initialized");
+      this.cdpClient = client;
+    } catch (error) {
+      this.logger.error("Failed to setup CDP WebRTC audio capture", {
+        error: error.message,
+        stack: error.stack,
       });
-      
-      if (isReady) {
-        break;
-      }
-      
-      attempts++;
-      await new Promise(resolve => setTimeout(resolve, 100));
+      throw error;
     }
-
-    if (attempts >= maxAttempts) {
-      throw new Error('Audio capture script failed to initialize - window.clerkStartAudioCapture not available');
-    }
-    
-    this.logger.info('Audio capture script injected and verified');
-
-    const started = await this.page.evaluate(() => {
-      if (typeof window.clerkStartAudioCapture !== 'function') {
-        return false;
-      }
-      return window.clerkStartAudioCapture();
-    });
-    if (!started) {
-      throw new Error('Unable to start remote audio capture pipeline');
-    }
-    this.audioCaptureActive = true;
   }
-
 
   handleAudioFrame(frame) {
     if (!frame || !Array.isArray(frame.samples) || frame.samples.length === 0) {
-      // Log occasionally when frames are invalid
-      if (!this._invalidFrameCount) this._invalidFrameCount = 0;
-      this._invalidFrameCount++;
-      if (this._invalidFrameCount % 100 === 0) {
-        this.logger.warn('⚠️ Invalid audio frame received', { 
-          count: this._invalidFrameCount,
-          frame: frame ? Object.keys(frame) : 'null'
-        });
-      }
       return;
     }
 
-    this.audioFrameSequence += 1;
-    
-    // Check if frame has actual audio (non-zero samples)
-    const maxSample = Math.max(...frame.samples.map(Math.abs));
-    const hasAudioContent = maxSample > 0.001;
-    
-    // Log first few frames and any frames with audio to confirm audio capture is working
-    if (this.audioFrameSequence <= 5 || hasAudioContent) {
-      this.logger.info('🎤 Audio frame captured', { 
-        sequence: this.audioFrameSequence,
-        samples: frame.samples.length,
-        maxSample: maxSample.toFixed(6),
-        hasAudioContent: hasAudioContent,
-        hasAudioInput: !!this.audioInputStream,
-        audioInputOpen: this.audioInputStream?.readyState === WebSocket.OPEN,
-        audioCaptureActive: this.audioCaptureActive
+    this.audioFrameCount++;
+    const frameRMS = frame.rms || 0;
+    const sampleCount = frame.sampleCount || frame.samples.length;
+
+    if (this.audioFrameCount === 1) {
+      this.logger.info("First audio frame received", {
+        rms: frameRMS.toFixed(4),
+        samples: sampleCount,
+        wsReady: this.gateway?.readyState === WebSocket.OPEN,
+        wsConnected: this.gatewayConnected,
       });
     }
 
-    // The audio from the capture script is at 48kHz (AudioContext sampleRate)
-    // But we need to send 16kHz to the backend for STT
-    // Resample from 48kHz to 16kHz (downsample by factor of 3)
     const sourceSampleRate = 48000;
     const targetSampleRate = 16000;
-    const resampleFactor = sourceSampleRate / targetSampleRate; // 3
-    
-    // Simple decimation: take every Nth sample
+    const resampleFactor = sourceSampleRate / targetSampleRate;
+
     const resampledLength = Math.floor(frame.samples.length / resampleFactor);
     const resampledSamples = new Array(resampledLength);
-    for (let i = 0; i < resampledLength; i += 1) {
+    for (let i = 0; i < resampledLength; i++) {
       const sourceIndex = Math.floor(i * resampleFactor);
       resampledSamples[i] = frame.samples[sourceIndex] || 0;
     }
-    
-    // Convert resampled samples to PCM 16-bit
+
     const pcmBuffer = Buffer.alloc(resampledSamples.length * 2);
-    for (let i = 0; i < resampledSamples.length; i += 1) {
+    for (let i = 0; i < resampledSamples.length; i++) {
       const value = Math.max(-1, Math.min(1, resampledSamples[i] || 0));
       const int16 = value < 0 ? value * 0x8000 : value * 0x7fff;
       pcmBuffer.writeInt16LE(int16, i * 2);
     }
 
-    // Send to audio input WebSocket for STT (server-side OpenAI Whisper)
-    if (this.audioInputStream && this.audioInputStream.readyState === WebSocket.OPEN) {
+    const now = Date.now();
+    const timeSinceLastLog = now - this.lastAudioLogTime;
+
+    // Check if WebSocket is ready and connected
+    const isWsReady = 
+      this.gateway && 
+      this.gateway.readyState === WebSocket.OPEN && 
+      this.gatewayConnected;
+
+    if (isWsReady) {
       try {
-        this.audioInputStream.send(pcmBuffer);
-        
-        // Log resampling details occasionally
-        if (this.audioFrameSequence % 100 === 0) {
-          this.logger.info('🎤 Audio frame resampled', {
-            originalSamples: frame.samples.length,
-            resampledSamples: resampledSamples.length,
-            originalRate: `${sourceSampleRate}Hz`,
-            targetRate: `${targetSampleRate}Hz`,
-            pcmBytes: pcmBuffer.length
-          });
-        }
-        // Log occasionally to verify audio is being sent
-        if (this.audioFrameSequence % 100 === 0) {
-          this.logger.info('✅ Sent audio chunk to STT', { 
-            bytes: pcmBuffer.length, 
-            sequence: this.audioFrameSequence,
-            hasAudio: this.audioCaptureActive 
-          });
+        this.gateway.send(pcmBuffer);
+        this.audioBytesSent += pcmBuffer.length;
+
+        if (timeSinceLastLog >= 5000) {
+          const avgFrameSize = this.audioBytesSent / this.audioFrameCount;
+          const bytesPerSecond =
+            (this.audioBytesSent / timeSinceLastLog) * 1000;
+          // this.logger.info("Audio capture stats", {
+          //   frames: this.audioFrameCount,
+          //   totalBytes: this.audioBytesSent,
+          //   avgFrameSize: Math.round(avgFrameSize),
+          //   bytesPerSecond: Math.round(bytesPerSecond),
+          //   lastFrameRMS: frameRMS.toFixed(4),
+          //   lastFrameSamples: sampleCount,
+          // });
+          this.lastAudioLogTime = now;
         }
       } catch (error) {
-        this.logger.error('Failed to send audio to STT endpoint', { error: error.message });
+        // WebSocket error - mark as disconnected but don't break flow
+        this.logger.warn("Failed to send audio, marking WebSocket as disconnected", { 
+          error: error.message 
+        });
+        this.gatewayConnected = false;
+        this.gateway = null;
+        // Try to reconnect in background (non-blocking)
+        this.connectWebSocket().catch(() => {
+          // Reconnection failed, continue anyway
+        });
       }
     } else {
-      // Log when audio stream is not available (every 100 frames to avoid spam)
-      if (this.audioFrameSequence % 100 === 0) {
-        this.logger.warn('⚠️ Audio input stream not connected - audio will not be processed for LLM', { 
-          hasStream: !!this.audioInputStream, 
-          readyState: this.audioInputStream?.readyState,
-          audioCaptureActive: this.audioCaptureActive
+      // WebSocket not ready - log occasionally but don't spam
+      if (timeSinceLastLog >= 5000 || this.audioFrameCount <= 10) {
+        this.logger.debug("Audio frames received but WebSocket not ready", {
+          frames: this.audioFrameCount,
+          wsReady: this.gateway?.readyState === WebSocket.OPEN,
+          wsConnected: this.gatewayConnected,
+          wsState: this.gateway?.readyState,
         });
-      }
-    }
-
-    // Also send legacy format to gateway if needed (for backward compatibility)
-    if (this.gateway && this.gateway.readyState === WebSocket.OPEN) {
-      const message = {
-        type: 'audio_stream',
-        meetingId: this.config.meetingId,
-        sessionId: this.config.sessionId,
-        sequence: this.audioFrameSequence,
-        frameSequence: frame.sequence,
-        timestamp: Date.now(),
-        format: 'pcm_s16le',
-        sampleRate: this.config.audioSampleRate,
-        channels: this.config.audioChannels,
-        chunk: pcmBuffer.toString('base64')
-      };
-      try {
-        this.gateway.send(JSON.stringify(message));
-      } catch (error) {
-        this.logger.error('Failed to send audio to gateway', { error: error.message });
+        this.lastAudioLogTime = now;
       }
     }
   }
 
-  async connectAudioInputGateway() {
-    return new Promise((resolve) => {
-      const gatewayUrl = new URL(this.config.rtGatewayUrl);
-      const baseUrl = `${gatewayUrl.protocol}//${gatewayUrl.host}`;
-      const sessionId = this.config.sessionId;
-      
-      this.logger.info('Connecting to audio input stream for STT', { url: `${baseUrl}/ws/bot_audio_input/${sessionId}` });
-      
-      const audioWs = new WebSocket(`${baseUrl}/ws/bot_audio_input/${sessionId}`);
+  handleAudioChunk(buffer) {
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    const samples16k = [];
+    for (let i = 0; i < buf.length; i += 2) {
+      if (i + 2 <= buf.length) {
+        const int16Sample = buf.readInt16LE(i);
+        const floatSample = int16Sample / 32768.0;
+        samples16k.push(floatSample);
+      }
+    }
 
-      const self = this;
-      
-      const handleOpen = () => {
-        self.logger.info('✅ Connected to audio input stream - ready to send audio for STT');
-        self.audioInputStream = audioWs;
-        self.audioInputReconnectAttempts = 0; // Reset on successful connection
-        self.isAudioInputReconnecting = false;
-        resolve(audioWs);
-      };
+    if (samples16k.length === 0) {
+      this.logger.warn("⚠️ Received empty audio chunk from backend");
+      return;
+    }
 
-      const handleMessage = (event) => {
-        try {
-          // Check if event.data exists and is valid
-          if (!event || !event.data) {
-            return;
-          }
-          
-          // Only parse string data (ignore binary PCM audio)
-          if (typeof event.data !== 'string') {
-            return;
-          }
-          
-          const message = JSON.parse(event.data);
-          
-          if (message.type === 'connected') {
-            self.logger.info('✅ Audio input stream confirmed ready', { message: message.message });
-          } else if (message.type === 'tts_complete') {
-            self.logger.info('✅ TTS complete received');
-          }
-        } catch (error) {
-          if (error.message && !error.message.includes('undefined')) {
-            self.logger.error('Failed to parse audio input message', { error: error.message });
-          }
-        }
-      };
+    // Convert 16kHz to 48kHz by tripling each sample
+    const samples48k = new Array(samples16k.length * 3);
+    for (let i = 0; i < samples16k.length; i++) {
+      const s = samples16k[i];
+      const idx = i * 3;
+      samples48k[idx] = s;
+      samples48k[idx + 1] = s;
+      samples48k[idx + 2] = s;
+    }
 
-      const handleError = (error) => {
-        self.logger.error('Audio input stream error', { error: error.message || error });
-        if (!self.shouldStop && !self.isAudioInputReconnecting) {
-          self.scheduleAudioInputReconnect(baseUrl, sessionId);
-        }
-      };
+    this.logger.debug("Playing audio chunk to meeting", {
+      samples16k: samples16k.length,
+      samples48k: samples48k.length,
+    });
 
-      const handleClose = () => {
-        self.logger.info('Audio input stream closed');
-        self.audioInputStream = null;
-        if (!self.shouldStop && !self.isAudioInputReconnecting) {
-          self.scheduleAudioInputReconnect(baseUrl, sessionId);
-        }
-      };
-
-      audioWs.on('open', handleOpen);
-      audioWs.on('message', handleMessage);
-      audioWs.on('error', handleError);
-      audioWs.on('close', handleClose);
+    this.playAudioToMeeting(samples48k).catch((error) => {
+      this.logger.error("❌ Failed to play audio to meeting", {
+        error: error.message,
+        errorStack: error.stack,
+        samples: samples48k.length,
+      });
     });
   }
 
-  scheduleAudioInputReconnect(baseUrl, sessionId) {
-    if (this.shouldStop || this.isAudioInputReconnecting) {
-      return;
-    }
-    
-    this.isAudioInputReconnecting = true;
-    this.audioInputReconnectAttempts += 1;
-    
-    const delay = this.calculateReconnectDelay(this.audioInputReconnectAttempts);
-    
-    this.logger.info(`Scheduling audio input reconnect attempt ${this.audioInputReconnectAttempts} in ${delay}ms`);
-    
-    this.audioInputReconnectTimeout = setTimeout(async () => {
-      try {
-        await this.connectAudioInputGateway();
-      } catch (error) {
-        this.logger.error('Audio input reconnect failed', { error: error.message });
-        if (!this.shouldStop) {
-          this.scheduleAudioInputReconnect(baseUrl, sessionId);
-        }
-      }
-    }, delay);
-  }
-
-  async runLoop() {
-    this.logger.info('Entering meeting monitoring loop - will monitor meeting presence and exit when meeting ends');
-
-    let consecutiveInactiveChecks = 0;
-    const maxInactiveChecks = Math.ceil(this.config.meetingPresenceGraceMs / this.config.meetingCheckIntervalMs);
-
-    while (!this.shouldStop) {
-      try {
-        // Check if meeting is still active
-        if (this.platform && this.page && !this.page.isClosed()) {
-          const isActive = await this.platform.isMeetingActive();
-          
-          if (isActive) {
-            // Meeting is active - reset counter and update timestamp
-            consecutiveInactiveChecks = 0;
-            this.lastMeetingActiveTs = Date.now();
-            this.logger.debug('Meeting is active', {
-              sessionId: this.config.sessionId,
-              lastActive: new Date(this.lastMeetingActiveTs).toISOString()
-            });
-          } else {
-            // Meeting appears inactive
-            consecutiveInactiveChecks++;
-            const inactiveDuration = Date.now() - this.lastMeetingActiveTs;
-            
-            this.logger.debug('Meeting presence check: inactive', {
-              sessionId: this.config.sessionId,
-              consecutiveChecks: consecutiveInactiveChecks,
-              inactiveDurationMs: inactiveDuration,
-              gracePeriodMs: this.config.meetingPresenceGraceMs
-            });
-
-            // If meeting has been inactive longer than grace period, exit
-            if (inactiveDuration >= this.config.meetingPresenceGraceMs) {
-              this.logger.info('Meeting has ended - exiting (inactive for longer than grace period)', {
-                sessionId: this.config.sessionId,
-                inactiveDurationMs: inactiveDuration,
-                gracePeriodMs: this.config.meetingPresenceGraceMs
-              });
-              await this.requestStop('meeting_ended');
-              break;
-            }
-          }
-        } else {
-          // Page/browser closed - exit
-          if (!this.page || this.page.isClosed()) {
-            this.logger.warn('Browser page closed - exiting');
-            await this.requestStop('page_closed');
-            break;
-          }
-        }
-      } catch (error) {
-        // Log error but continue monitoring (don't exit on transient errors)
-        this.logger.warn('Error checking meeting presence', {
-          error: error.message,
-          sessionId: this.config.sessionId
-        });
-      }
-
-      // Wait before next check
-      await new Promise((resolve) => setTimeout(resolve, this.config.meetingCheckIntervalMs));
-    }
-    
-    this.logger.info('Exiting meeting monitoring loop', {
-      reason: this.stopReason,
-      sessionId: this.config.sessionId
-    });
-  }
-
-  async requestStop(reason = 'requested') {
-    if (this.shouldStop) {
-      return;
-    }
-    this.shouldStop = true;
-    this.stopReason = reason;
-    this.logger.info('Stop requested', { reason });
-  }
-
-  async leaveMeeting(reason = 'completed') {
-    if (this.hasLeft) {
-      return;
-    }
-
-    this.hasLeft = true;
-    this.isJoined = false;
-
+  async playAudioToMeeting(audioData) {
     try {
-      if (this.platform) {
-        await this.platform.leaveMeeting();
-      }
+      const contextInfo = await this.page.evaluate((samples) => {
+        const info = {
+          url: window.location.href,
+          origin: window.location.origin,
+          frameName: window.name || 'main',
+          isTopFrame: window === window.top,
+          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+          hasVirtualStream: !!window.aurrayVirtualMicStream,
+          hasAudioContext: !!window.__aurrayMasterAudioContext,
+          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+        };
+        
+        if (typeof window.aurrayInjectAudio48k === "function") {
+          window.aurrayInjectAudio48k(samples);
+          console.log("[AURRAY] Injected audio samples", {
+            ...info,
+            sampleCount: samples.length
+          });
+        } else {
+          console.warn("[AURRAY] aurrayInjectAudio48k not available", info);
+          throw new Error("aurrayInjectAudio48k not found");
+        }
+        return info;
+      }, audioData);
+      
+      this.logger.debug("Audio injected successfully", contextInfo);
     } catch (error) {
-      this.logger.warn('Failed to execute platform leave command', { error: error.message });
+      this.logger.error("❌ Error playing audio to meeting", {
+        error: error.message,
+        errorStack: error.stack,
+        samples: audioData.length,
+      });
+      throw error;
     }
+  }
 
-    await this.notifyMeetingLeft(reason);
-    await this.notifyLifecycle('meeting_left', {
-      meeting_id: this.config.meetingId,
-      session_id: this.config.sessionId,
-      reason
+  async setupVirtualMic() {
+    this.logger.info("Setting up virtual microphone");
+    
+    const pageUrl = this.page.url();
+    const frameInfo = await this.page.evaluate(() => {
+      return {
+        url: window.location.href,
+        origin: window.location.origin,
+        frameName: window.name || 'main',
+        isTopFrame: window === window.top,
+        frameCount: window.frames.length
+      };
+    }).catch(() => ({ error: 'Could not get frame info' }));
+    
+    this.logger.info("Virtual mic setup context", {
+      pageUrl,
+      frameInfo
     });
+
+    await this.page.evaluate(() => {
+      const AudioContextClass =
+        window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("AudioContext not available");
+      }
+
+      const contextInfo = {
+        url: window.location.href,
+        origin: window.location.origin,
+        frameName: window.name || 'main',
+        isTopFrame: window === window.top
+      };
+      console.log("[AURRAY] Creating AudioContext for virtual mic", contextInfo);
+
+      const ctx = new AudioContextClass({ sampleRate: 48000 });
+      window.__aurrayMasterAudioContext = ctx;
+      console.log("[AURRAY] AudioContext created", {
+        ...contextInfo,
+        state: ctx.state,
+        sampleRate: ctx.sampleRate
+      });
+
+      const buffer = [];
+      let readIndex = 0;
+      const processor = ctx.createScriptProcessor(1024, 1, 1);
+
+      let tonePhase = 0;
+      const TONE_FREQ = 20;
+      const TONE_AMPLITUDE = 0.0001;
+
+      processor.onaudioprocess = (event) => {
+        const output = event.outputBuffer.getChannelData(0);
+        const len = output.length;
+        const sampleRate = event.outputBuffer.sampleRate;
+
+        for (let i = 0; i < len; i++) {
+          if (readIndex < buffer.length) {
+            output[i] = buffer[readIndex++];
+          } else {
+            tonePhase += (TONE_FREQ / sampleRate) * 2 * Math.PI;
+            if (tonePhase > 2 * Math.PI) tonePhase -= 2 * Math.PI;
+            output[i] = Math.sin(tonePhase) * TONE_AMPLITUDE;
+          }
+        }
+
+        if (readIndex > 48000 * 5) {
+          buffer.splice(0, readIndex);
+          readIndex = 0;
+        }
+      };
+
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0;
+      processor.connect(gain);
+      gain.connect(ctx.destination);
+
+      const dest = ctx.createMediaStreamDestination();
+      processor.connect(dest);
+
+      // Teams-specific: Configure track to appear as a valid device
+      const audioTrack = dest.stream.getAudioTracks()[0];
+      const isTeams = window.location.href.includes('teams.microsoft.com');
+      if (audioTrack && isTeams) {
+        // Override getSettings to return device info that Teams expects
+        const originalGetSettings = audioTrack.getSettings.bind(audioTrack);
+        audioTrack.getSettings = function() {
+          const settings = originalGetSettings();
+          // Return settings that Teams will accept
+          return {
+            ...settings,
+            deviceId: 'default', // Use 'default' which Teams should recognize
+            groupId: '',
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true
+          };
+        };
+        
+        // Override getCapabilities to return proper capabilities
+        const originalGetCapabilities = audioTrack.getCapabilities ? audioTrack.getCapabilities.bind(audioTrack) : null;
+        if (originalGetCapabilities) {
+          audioTrack.getCapabilities = function() {
+            const caps = originalGetCapabilities();
+            return {
+              ...caps,
+              autoGainControl: { ideal: true },
+              echoCancellation: { ideal: true },
+              noiseSuppression: { ideal: true }
+            };
+          };
+        }
+      }
+
+      window.aurrayVirtualMicStream = dest.stream;
+      window.aurrayInjectAudio48k = (samples) => {
+        if (!samples || !samples.length) {
+          return;
+        }
+        for (let i = 0; i < samples.length; i++) {
+          buffer.push(samples[i]);
+        }
+      };
+      
+      const finalContextInfo = {
+        url: window.location.href,
+        origin: window.location.origin,
+        frameName: window.name || 'main',
+        isTopFrame: window === window.top,
+        streamId: dest.stream.id,
+        trackCount: dest.stream.getAudioTracks().length,
+        trackIds: dest.stream.getAudioTracks().map(t => t.id),
+        trackStates: dest.stream.getAudioTracks().map(t => t.readyState),
+        audioContextState: ctx.state,
+        hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+        isTeams: isTeams,
+        trackConfigured: isTeams && audioTrack ? typeof audioTrack.getSettings === 'function' : false
+      };
+      console.log("[AURRAY] Virtual microphone initialized", finalContextInfo);
+    });
+
+    await this.page.waitForFunction(() => !!window.aurrayVirtualMicStream, {
+      timeout: 10000,
+    });
+    
+    // Verify virtual mic is available and log details
+    const virtualMicStatus = await this.page.evaluate(() => {
+      return {
+        url: window.location.href,
+        origin: window.location.origin,
+        frameName: window.name || 'main',
+        isTopFrame: window === window.top,
+        hasVirtualStream: !!window.aurrayVirtualMicStream,
+        streamId: window.aurrayVirtualMicStream?.id || 'N/A',
+        trackCount: window.aurrayVirtualMicStream?.getAudioTracks().length || 0,
+        hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+        hasAudioContext: !!window.__aurrayMasterAudioContext,
+        audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+      };
+    }).catch(() => ({ error: 'Could not evaluate virtual mic status' }));
+    
+    this.logger.info("Virtual microphone ready", virtualMicStatus);
+  }
+
+  async saveAuthState() {
+    if (this.config.platform === "google_meet") {
+      try {
+        const authStatePath = path.resolve(__dirname, "google_auth_state.json");
+        await this.context.storageState({ path: authStatePath });
+        this.logger.info("Auth state saved", { path: authStatePath });
+      } catch (error) {
+        this.logger.warn("Failed to save auth state", { error: error.message });
+      }
+    }
   }
 
   async cleanup() {
-    this.logger.info('Cleaning up browser bot resources', {
-      stopReason: this.stopReason
-    });
+    this.logger.info("Cleaning up browser bot resources");
 
-    if (this.initialSpeechTimeout) {
-      clearTimeout(this.initialSpeechTimeout);
-      this.initialSpeechTimeout = null;
+    // Send status update before closing connections (fire-and-forget)
+    try {
+      this.sendStatusUpdate(
+        "cleaning_up",
+        "Bot is shutting down and cleaning up resources",
+        { platform: this.config.platform }
+      );
+    } catch (error) {
+      this.logger.warn("Failed to send cleanup status update", {
+        error: error.message,
+      });
     }
 
-    // Cancel audio input reconnection
-    if (this.audioInputReconnectTimeout) {
-      clearTimeout(this.audioInputReconnectTimeout);
-      this.audioInputReconnectTimeout = null;
-    }
-    this.isAudioInputReconnecting = false;
-    
-    // Close audio input stream
-    if (this.audioInputStream && this.audioInputStream.readyState === WebSocket.OPEN) {
+    // Cleanup platform-specific resources (e.g., polling intervals)
+    if (this.platform && typeof this.platform.cleanup === 'function') {
       try {
-        this.audioInputStream.close();
+        await this.platform.cleanup();
       } catch (error) {
-        this.logger.warn('Error closing audio input stream', { error: error.message });
+        this.logger.warn("Error cleaning up platform resources", {
+          error: error.message,
+        });
       }
     }
-    this.audioInputStream = null;
-    
-    if (this.audioCaptureActive) {
-      try {
-        await this.page.evaluate(() => window.clerkStopAudioCapture());
-      } catch (error) {
-        this.logger.warn('Failed to stop audio capture', { error: error.message });
-      }
-      this.audioCaptureActive = false;
-    }
 
-    if (this.isJoined && !this.hasLeft) {
-      await this.leaveMeeting(this.stopReason || 'cleanup');
+    // Close WebSocket gracefully
+    if (this.gateway) {
+      try {
+        // Check if WebSocket is in a state that can be closed
+        if (
+          this.gateway.readyState === WebSocket.OPEN ||
+          this.gateway.readyState === WebSocket.CONNECTING
+        ) {
+          this.gateway.close();
+        }
+      } catch (error) {
+        this.logger.warn("Error closing WebSocket", { error: error.message });
+      }
     }
+    this.gateway = null;
+    this.gatewayConnected = false;
 
     if (this.page && !this.page.isClosed()) {
       try {
         await this.page.close({ runBeforeUnload: false });
       } catch (error) {
-        this.logger.warn('Error closing page', { error: error.message });
+        this.logger.warn("Error closing page", { error: error.message });
       }
     }
 
@@ -2066,7 +2101,9 @@ class BrowserBot {
       try {
         await this.context.close();
       } catch (error) {
-        this.logger.warn('Error closing browser context', { error: error.message });
+        this.logger.warn("Error closing browser context", {
+          error: error.message,
+        });
       }
     }
 
@@ -2074,267 +2111,25 @@ class BrowserBot {
       try {
         await this.browser.close();
       } catch (error) {
-        this.logger.warn('Error closing browser', { error: error.message });
+        this.logger.warn("Error closing browser", { error: error.message });
       }
-    }
-
-    // Cancel any pending reconnection attempts
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-    this.isReconnecting = false;
-    
-    if (this.audioStream && this.audioStream.readyState === WebSocket.OPEN) {
-      this.audioStream.close();
-    }
-    this.audioStream = null;
-  }
-
-  async handleGatewayMessage(payload) {
-    let message;
-    try {
-      message = JSON.parse(payload.toString());
-    } catch (error) {
-      this.logger.warn('Failed to parse gateway message', { error: error.message });
-      return;
-    }
-
-    switch (message.type) {
-      case 'audio_request':
-        this.handleAudioRequest(message);
-        break;
-      case 'tts_audio':
-        if (this.config.enableTtsPlayback) {
-          await this.handleTtsAudio(message);
-        }
-        break;
-      case 'meeting_command':
-        await this.handleMeetingCommand(message);
-        break;
-      default:
-        this.logger.debug('Ignoring unsupported gateway message type', { type: message.type });
-    }
-  }
-
-  handleAudioRequest(message) {
-    this.logger.debug('Gateway requested audio snapshot', { requestId: message.requestId });
-    const response = {
-      type: 'audio_response',
-      requestId: message.requestId,
-      meetingId: this.config.meetingId,
-      sessionId: this.config.sessionId,
-      active: this.audioCaptureActive,
-      timestamp: Date.now()
-    };
-    this.gateway?.send(JSON.stringify(response));
-  }
-
-  async playAudioToMeeting(audioData) {
-    try {
-      // Inject audio in chunks to avoid stack overflow
-      const CHUNK_SIZE = 10000; // Inject 10K samples at a time
-      for (let i = 0; i < audioData.length; i += CHUNK_SIZE) {
-        const chunk = audioData.slice(i, i + CHUNK_SIZE);
-        await this.page.evaluate((samples) => {
-          if (window.clerkVirtualMic && window.clerkVirtualMic.injectAudio) {
-            window.clerkVirtualMic.injectAudio(samples);
-          }
-        }, chunk);
-      }
-      this.logger.info('Audio injected into virtual microphone in chunks', { totalSamples: audioData?.length || 0 });
-    } catch (error) {
-      this.logger.error('Failed to inject audio into meeting', { error: error.message });
-    }
-  }
-
-  async handleTtsAudio(message) {
-    this.logger.info('Playing TTS audio into meeting', { audioId: message.audioId });
-
-    let samples = [];
-
-    if (typeof message.audioData === 'string') {
-      const buffer = Buffer.from(message.audioData, 'base64');
-      const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-      const float32 = new Float32Array(buffer.byteLength / 2);
-      for (let i = 0; i < float32.length; i += 1) {
-        float32[i] = view.getInt16(i * 2, true) / 0x7fff;
-      }
-      samples = Array.from(float32);
-    } else if (Array.isArray(message.audioData)) {
-      samples = message.audioData;
-    }
-
-    if (!samples.length) {
-      this.logger.warn('TTS audio payload missing data');
-      return;
-    }
-
-    // Inject audio into virtual microphone so meeting can hear it
-    await this.playAudioToMeeting(samples).catch(error => {
-      this.logger.error('Failed to inject TTS audio into meeting', { error: error.message });
-    });
-  }
-
-  /**
-   * Speak text in the meeting by requesting audio from rt_gateway and injecting into microphone
-   */
-  async speak(text, prompt = '') {
-    if (!this.config.enableTtsPlayback) {
-      this.logger.warn('TTS not enabled, cannot speak');
-      return;
-    }
-
-    if (!this.audioStream || this.audioStream.readyState !== WebSocket.OPEN) {
-      this.logger.error('Audio stream not connected, cannot speak');
-      return;
-    }
-
-    try {
-      this.logger.info('Requesting TTS from rt_gateway', { textLength: text.length });
-      
-      // Send TTS request to rt_gateway
-      const ttsRequest = {
-        type: 'tts_request',
-        text: text,
-        voice_id: this.config.ttsVoice || 'default'
-      };
-      
-      this.audioStream.send(JSON.stringify(ttsRequest));
-      
-      // Audio chunks will be received via handlePCMAudioChunk()
-      // and automatically injected into the virtual microphone
-      
-      this.logger.info('TTS request sent, waiting for audio stream');
-    } catch (error) {
-      this.logger.error('Failed to speak in meeting', { error: error.message, stack: error.stack });
-    }
-  }
-
-  /**
-   * Get LLM response and speak it in the meeting
-   */
-  async speakLLMResponse(prompt = '') {
-    if (!this.llmService) {
-      this.logger.warn('LLM not enabled');
-      return;
-    }
-
-    try {
-      this.logger.info('Fetching LLM response');
-      
-      // Get text response from LLM
-      const text = await this.llmService.getResponse(prompt);
-      
-      this.logger.info('Got LLM response', { textLength: text.length });
-      
-      // Speak the response via rt_gateway
-      await this.speak(text, prompt);
-    } catch (error) {
-      this.logger.error('Failed to speak LLM response', { error: error.message });
-    }
-  }
-
-  async handleMeetingCommand(message) {
-    const command = message.command;
-    this.logger.info('Handling meeting command', { command });
-    try {
-      switch (command) {
-        case 'mute':
-          await this.platform.setMicrophone(false);
-          break;
-        case 'unmute':
-          await this.platform.setMicrophone(true);
-          break;
-        case 'camera_on':
-          await th/meetings/m.setCamera(true);
-          break;
-        case 'camera_off':
-          await this.platform.setCamera(false);
-          break;
-        case 'leave':
-          await this.requestStop('command_leave');
-          await this.leaveMeeting('command');
-          break;
-        default:
-          this.logger.warn('Unknown meeting command', { command });
-      }
-    } catch (error) {
-      this.logger.error('Failed to execute meeting command', { command, error: error.message });
-    }
-  }
-
-  async notifyMeetingJoined() {
-    try {
-      const response = await axios.post(
-        `${this.config.apiBaseUrl}/api/v1/meetings/${this.config.meetingId}/bot-joined`,
-        {
-          sessionId: this.config.sessionId,
-          botName: this.config.botName,
-          platform: this.config.platform,
-          timestamp: new Date().toISOString(),
-          meeting_url: this.config.meetingUrl
-        }
-      );
-      this.logger.info('Reported meeting join to API', { status: response.status });
-    } catch (error) {
-      this.logger.warn('Failed to notify API of meeting join', { error: error.message });
-    }
-  }
-
-  async notifyMeetingLeft(reason) {
-    try {
-      const response = await axios.post(
-        `${this.config.apiBaseUrl}/api/v1/meetings/${this.config.meetingId}/bot-left`,
-        {
-          sessionId: this.config.sessionId,
-          timestamp: new Date().toISOString(),
-          reason
-        }
-      );
-      this.logger.info('Reported meeting leave to API', { status: response.status });
-    } catch (error) {
-      this.logger.warn('Failed to notify API of meeting leave', { error: error.message });
-    }
-  }
-
-  async notifyLifecycle(event, data) {
-    try {
-      await axios.post(`${this.config.apiBaseUrl}/api/v1/meetings/bot-log`, {
-        event,
-        data,
-        timestamp: new Date().toISOString()
-      }, {
-        timeout: 5000,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    } catch (error) {
-      this.logger.warn('Failed to log lifecycle event', { event, error: error.message });
     }
   }
 }
 
 async function main() {
-  activeBot = new BrowserBot(config);
-  await activeBot.start();
-}
-
-async function cleanup() {
-  if (activeBot) {
-    await activeBot.cleanup();
-  }
+  const bot = new BrowserBot(config);
+  await bot.start();
 }
 
 if (require.main === module) {
   main().catch(async (error) => {
-    console.error('[ERROR] Browser bot terminated with error', error);
-    await cleanup();
+    console.error("[ERROR] Browser bot terminated with error", error);
     process.exit(1);
   });
 }
 
 module.exports = {
   main,
-  cleanup,
-  config
+  config,
 };

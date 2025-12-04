@@ -19,8 +19,8 @@ services:
       - BOT_NAME=${BOT_NAME:-Clerk AI Bot}
       
       # Backend URLs (updated to use production IP)
-      - RT_GATEWAY_URL=${RT_GATEWAY_URL:-ws://localhost:8000}
-      - API_BASE_URL=${API_BASE_URL:-http://localhost:8000}
+      - RT_GATEWAY_URL=${RT_GATEWAY_URL:-ws://api.auray.net}
+      - API_BASE_URL=${API_BASE_URL:-https://api.auray.net}
       
       # Timeout Configuration
       - JOIN_TIMEOUT_SEC=${JOIN_TIMEOUT_SEC:-300}

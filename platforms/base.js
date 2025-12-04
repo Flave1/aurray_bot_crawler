@@ -1,9 +1,9 @@
 const DEFAULT_WAIT_FOR_SELECTOR_TIMEOUT = 15000;
 
 /**
- * Base class for platform-specific meeting automation helpers.
- * Concrete controllers should override the abstract methods to implement
- * deterministic join/leave flows and media controls per platform.
+ * Base class for platform-specific meeting automation controllers.
+ * Concrete implementations must provide deterministic join/leave flows
+ * and media control logic for each supported platform.
  */
 class PlatformController {
   /**
@@ -15,38 +15,56 @@ class PlatformController {
     this.page = page;
     this.config = config;
     this.logger = logger;
-    this.joinDeadline = Date.now() + (config.joinTimeoutSec || 60) * 1000;
+    this.joinDeadline =
+      Date.now() + (config.joinTimeoutSec || 60) * 1000;
   }
 
+  /* -------------------------------------------------------------------------- */
+  /*                                PERMISSIONS                                 */
+  /* -------------------------------------------------------------------------- */
+
   /**
-   * Ensure Playwright context has media permissions granted for this origin.
+   * Get origin from meeting URL.
+   * @returns {string}
    */
-  async grantPermissions() {
+  static getPermissionsOrigin(meetingUrl) {
     try {
-      const origin = new URL(this.config.meetingUrl).origin;
-      await this.page.context().grantPermissions(['microphone', 'camera'], { origin });
-      this.logger.debug?.('Granted media permissions', { origin });
-    } catch (error) {
-      this.logger.warn?.('Unable to grant media permissions automatically', { error: error.message });
+      return new URL(meetingUrl).origin;
+    } catch {
+      return '';
     }
   }
 
   /**
-   * Optional hook executed before navigation completes.
+   * Grant mic/camera permissions for the meeting origin.
    */
-  // eslint-disable-next-line class-methods-use-this
-  async beforeNavigate() {}
+  async grantPermissions() {
+    try {
+      const origin = this.constructor.getPermissionsOrigin(
+        this.config.meetingUrl
+      );
+      if (!origin) {
+        this.logger.warn?.('Permissions origin unavailable');
+        return;
+      }
 
-  /**
-   * Optional hook executed after navigation completes.
-   */
-  // eslint-disable-next-line class-methods-use-this
-  async afterNavigate() {}
+      await this.page.context().grantPermissions(
+        ['microphone', 'camera'],
+        { origin }
+      );
 
-  /**
-   * Execute the full join sequence: pre-join preparation, submitting the join
-   * action, waiting for in-meeting confirmation, then running post-join tasks.
-   */
+      this.logger.debug?.('Media permissions granted', { origin });
+    } catch (error) {
+      this.logger.warn?.('Failed to grant media permissions', {
+        error: error.message,
+      });
+    }
+  }
+
+  /* -------------------------------------------------------------------------- */
+  /*                              JOIN SEQUENCE                                 */
+  /* -------------------------------------------------------------------------- */
+
   async joinMeeting() {
     await this.beforeJoin();
     await this.performJoin();
@@ -54,195 +72,162 @@ class PlatformController {
     await this.afterJoin();
   }
 
-  /**
-   * Ensure we are ready to join (fill forms, accept dialogs).
-   * Concrete implementations must override.
-   */
+  // Abstract steps — must be overridden
   async beforeJoin() {
-    throw new Error('beforeJoin() must be implemented by concrete controller');
+    throw new Error('beforeJoin() must be implemented');
   }
-
-  /**
-   * Submit the actual join action (click the join button).
-   * Concrete implementations must override.
-   */
   async performJoin() {
-    throw new Error('performJoin() must be implemented by concrete controller');
+    throw new Error('performJoin() must be implemented');
   }
-
-  /**
-   * Wait for confirmation that we are in the meeting.
-   * Concrete implementations must override.
-   */
   async ensureJoined() {
-    throw new Error('ensureJoined() must be implemented by concrete controller');
+    throw new Error('ensureJoined() must be implemented');
   }
-
-  /**
-   * Optional hook executed after the join succeeds.
-   */
-  // eslint-disable-next-line class-methods-use-this
-  async afterJoin() {}
-
-  /**
-   * Check if the bot has actually joined the meeting (in-meeting UI is visible).
-   * Concrete implementations must override.
-   * @returns {Promise<boolean>} true if bot is confirmed to be in the meeting
-   */
   async hasBotJoined() {
-    throw new Error('hasBotJoined() must be implemented by concrete controller');
+    throw new Error('hasBotJoined() must be implemented');
   }
-
-  /**
-   * Leave the meeting for this platform. Concrete implementations must override.
-   */
   async leaveMeeting() {
-    throw new Error('leaveMeeting() must be implemented by concrete controller');
+    throw new Error('leaveMeeting() must be implemented');
+  }
+  async setMicrophone(_) {
+    throw new Error('setMicrophone() must be implemented');
+  }
+  async setCamera(_) {
+    throw new Error('setCamera() must be implemented');
   }
 
-  /**
-   * Toggle microphone to desired state.
-   * @param {boolean} enable
-   */
-  async setMicrophone(enable) { // eslint-disable-line no-unused-vars
-    throw new Error('setMicrophone() must be implemented by concrete controller');
-  }
+  // Optional hooks
+  async beforeNavigate() {}
+  async afterNavigate() {}
+  async afterJoin() {}
+  async cleanup() {}
 
-  /**
-   * Toggle camera to desired state.
-   * @param {boolean} enable
-   */
-  async setCamera(enable) { // eslint-disable-line no-unused-vars
-    throw new Error('setCamera() must be implemented by concrete controller');
-  }
+  /* -------------------------------------------------------------------------- */
+  /*                               MEETING STATE                                */
+  /* -------------------------------------------------------------------------- */
 
-  /**
-   * Meeting presence selectors used to detect if we are still inside the call.
-   */
   getMeetingPresenceSelectors() {
     return [];
   }
 
-  /**
-   * Determine whether the meeting UI is still active.
-   */
   async isMeetingActive() {
-    if (this.page.isClosed()) {
-      return false;
-    }
+    if (this.page.isClosed()) return false;
+
     const selectors = this.getMeetingPresenceSelectors();
-    if (!selectors.length) {
-      return true;
-    }
+    if (!selectors.length) return true;
+
     const context = this.getDomTarget();
+
     for (const selector of selectors) {
       try {
         const locator = context.locator(selector).first();
-        if (await locator.isVisible({ timeout: 2000 })) {
-          return true;
-        }
-      } catch (error) {
-        this.logger.debug?.('Meeting presence selector not visible', { selector, error: error.message });
-      }
+        if (await locator.isVisible({ timeout: 2000 })) return true;
+      } catch (_) {}
     }
+
     return false;
   }
 
-  /**
-   * Utility: click the first visible element matching any of the selectors
-   * provided, returning the locator that succeeded.
-   */
+  /* -------------------------------------------------------------------------- */
+  /*                               DOM UTILITIES                                */
+  /* -------------------------------------------------------------------------- */
+
+  getDomTarget() {
+    return this.page;
+  }
+
   async clickFirstVisible(selectors, options = {}) {
+    const { timeout = 2000, clickDelay = 0 } = options;
     const context = this.getDomTarget();
+
     for (const selector of selectors) {
       try {
         const locator = context.locator(selector).first();
-        if (await locator.waitFor({ state: 'visible', timeout: options.timeout || 2000 })) {
-          await locator.click({ delay: options.clickDelay || 0 });
-          return locator;
-        }
-      } catch (error) {
-        this.logger.debug?.(`Selector not clickable: ${selector}`, { error: error.message });
-      }
+        await locator.waitFor({ state: 'visible', timeout });
+        await locator.click({ delay: clickDelay });
+        return locator;
+      } catch (_) {}
     }
     return null;
   }
 
-  /**
-   * Utility: wait for one of the provided selectors to appear.
-   */
-  async waitForAny(selectors, { timeout = DEFAULT_WAIT_FOR_SELECTOR_TIMEOUT, state = 'visible' } = {}) {
+  async waitForAny(
+    selectors,
+    { timeout = DEFAULT_WAIT_FOR_SELECTOR_TIMEOUT, state = 'visible' } = {}
+  ) {
     const context = this.getDomTarget();
     let lastError;
+
     for (const selector of selectors) {
       try {
         const locator = context.locator(selector).first();
         await locator.waitFor({ state, timeout });
         return locator;
-      } catch (error) {
-        lastError = error;
+      } catch (err) {
+        lastError = err;
       }
     }
+
     throw lastError;
   }
 
-  /**
-   * Override to point DOM operations (locators, clicks) at a specific frame.
-   */
-  getDomTarget() {
-    return this.page;
-  }
+  /* -------------------------------------------------------------------------- */
+  /*                                  TOGGLES                                   */
+  /* -------------------------------------------------------------------------- */
 
-  /**
-   * Utility: determine boolean state from button attributes/labels.
-   */
   async extractToggleState(locator) {
     const ariaPressed = await locator.getAttribute('aria-pressed');
     if (ariaPressed === 'true') return true;
     if (ariaPressed === 'false') return false;
 
-    const ariaLabel = (await locator.getAttribute('aria-label')) || '';
-    if (/turn off/i.test(ariaLabel)) return true;
-    if (/turn on/i.test(ariaLabel)) return false;
+    const label = (await locator.getAttribute('aria-label')) || '';
+    if (/turn off/i.test(label)) return true;
+    if (/turn on/i.test(label)) return false;
 
-    const dataIsMuted = await locator.getAttribute('data-is-muted');
-    if (dataIsMuted === 'true') return false;
-    if (dataIsMuted === 'false') return true;
+    const muted = await locator.getAttribute('data-is-muted');
+    if (muted === 'true') return false;
+    if (muted === 'false') return true;
 
     return null;
   }
 
-  /**
-   * Utility: ensure a toggle button matches desired boolean state.
-   */
   async ensureToggleState({ selectors, desiredState, allowUnknown = false }) {
-    const locator = await this.waitForAny(selectors, { timeout: 6000 }).catch(() => null);
+    const locator = await this.waitForAny(selectors, {
+      timeout: 6000,
+    }).catch(() => null);
+
     if (!locator) {
-      throw new Error(`Unable to locate toggle control for selectors: ${selectors.join(', ')}`);
+      throw new Error(
+        `Toggle control not found: ${selectors.join(', ')}`
+      );
     }
 
-    const currentState = await this.extractToggleState(locator);
-    if (currentState === null) {
-      if (!allowUnknown) {
-        this.logger.warn?.('Toggle state unknown, clicking once to attempt desired state');
-        await locator.click();
-      }
+    const current = await this.extractToggleState(locator);
+
+    if (current === null) {
+      if (!allowUnknown) await locator.click();
       return locator;
     }
 
-    if (currentState !== desiredState) {
-      await locator.click();
-    }
+    if (current !== desiredState) await locator.click();
     return locator;
   }
 
-  /**
-   * Utility: ensure we don't exceed overall join timeout.
-   */
+  /* -------------------------------------------------------------------------- */
+  /*                             JOIN DEADLINE CHECK                             */
+  /* -------------------------------------------------------------------------- */
+
   enforceJoinDeadline() {
     if (Date.now() > this.joinDeadline) {
-      throw new Error('Timed out while attempting to join meeting');
+      throw new Error('Join meeting timed out');
     }
+  }
+
+  /* -------------------------------------------------------------------------- */
+  /*                            BROWSER ARGS OVERRIDE                            */
+  /* -------------------------------------------------------------------------- */
+
+  static getBrowserArgs() {
+    return [];
   }
 }
 

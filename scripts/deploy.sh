@@ -6,7 +6,7 @@ set -euo pipefail
 
 AWS_REGION="us-east-1"
 AWS_ACCOUNT_ID="588412562130"
-ECR_REPOSITORY="browser_bot"
+ECR_REPOSITORY="bot_staging"
 IMAGE_TAG="${3:-browser-bot-$(date +%Y%m%d%H%M%S)}"
 CLUSTER_NAME="${1:-clerk-cluster}"
 SERVICE_NAME="${2:-browser-bot-service}"
@@ -77,7 +77,20 @@ aws ecs update-service \
 
 echo "✅ Service update initiated for $SERVICE_NAME on $CLUSTER_NAME"
 
-echo ""
-echo "Next steps:"
-echo "  • Monitor deployment: aws ecs wait services-stable --cluster $CLUSTER_NAME --services $SERVICE_NAME --region $AWS_REGION"
-echo "  • Verify logs and health checks once the service is stable."
+step "Waiting for service to stabilize..."
+aws ecs wait services-stable \
+  --cluster "$CLUSTER_NAME" \
+  --services "$SERVICE_NAME" \
+  --region "$AWS_REGION"
+
+echo "✅ Deployment completed successfully!"
+
+# Step: Clean up old browser-bot tasks
+step "Cleaning up old browser-bot tasks..."
+CLEANUP_SCRIPT="$(dirname "$0")/cleanup-old-tasks.sh"
+if [ -f "$CLEANUP_SCRIPT" ]; then
+    bash "$CLEANUP_SCRIPT" "$CLUSTER_NAME" "$SERVICE_NAME"
+else
+    echo "⚠️  Cleanup script not found at: $CLEANUP_SCRIPT"
+    echo "   Skipping cleanup. Old tasks may still be running."
+fi

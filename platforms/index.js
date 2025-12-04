@@ -18,7 +18,38 @@ function createPlatformController(platform, page, config, logger) {
   return new Controller(page, config, logger);
 }
 
+/**
+ * Get browser arguments for a specific platform
+ * @param {string} platform - Platform name
+ * @returns {string[]} Array of browser command-line arguments
+ */
+function getPlatformBrowserArgs(platform) {
+  const normalized = (platform || '').toLowerCase();
+  const Controller = PLATFORM_REGISTRY[normalized];
+  if (!Controller) {
+    return [];
+  }
+  return Controller.getBrowserArgs ? Controller.getBrowserArgs() : [];
+}
+
+/**
+ * Get permissions origin for a specific platform
+ * @param {string} platform - Platform name
+ * @param {string} meetingUrl - Meeting URL
+ * @returns {string} Origin URL for permissions
+ */
+function getPlatformPermissionsOrigin(platform, meetingUrl) {
+  const normalized = (platform || '').toLowerCase();
+  const Controller = PLATFORM_REGISTRY[normalized];
+  if (!Controller) {
+    return '';
+  }
+  return Controller.getPermissionsOrigin ? Controller.getPermissionsOrigin(meetingUrl) : '';
+}
+
 module.exports = {
   createPlatformController,
+  getPlatformBrowserArgs,
+  getPlatformPermissionsOrigin,
   PLATFORM_REGISTRY
 };

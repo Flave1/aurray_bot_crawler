@@ -3,51 +3,57 @@ FROM node:18-slim AS builder
 
 WORKDIR /app
 
-# Install system dependencies for building
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      wget gnupg ca-certificates \
-      build-essential \
-      python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
 # Copy package files first (for better layer caching)
 COPY package.json package-lock.json* ./
 
-# Install dependencies (production only, clean npm cache)
-RUN npm ci --only=production --no-audit --no-fund \
+# Install dependencies (production only, ignore optional deps to reduce size)
+RUN npm ci --only=production --no-audit --no-fund --ignore-scripts \
     && npm cache clean --force \
     && rm -rf /tmp/*
 
-# Copy only necessary source files
+# Copy source files
 COPY bot_entry.js healthcheck.js ./
 COPY lib/ ./lib/
 COPY platforms/ ./platforms/
 
-# Install Playwright browsers (Chromium only to save space)
+# Install Playwright Chromium only (minimal deps)
 RUN npx playwright install chromium --with-deps \
     && mv /root/.cache/ms-playwright /ms-playwright \
-    && rm -rf /root/.cache/playwright \
-    && rm -rf /tmp/*
+    && rm -rf /root/.cache /tmp/*
 
-# Remove unnecessary files from node_modules
-RUN find node_modules -name "*.map" -type f -delete \
-    && find node_modules -name "*.ts" -type f -delete \
-    && find node_modules -name "*.md" -type f -delete \
-    && find node_modules -name "*.txt" -type f -delete \
-    && find node_modules -name "test" -type d -exec rm -rf {} + 2>/dev/null || true \
-    && find node_modules -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true \
-    && find node_modules -name "__tests__" -type d -exec rm -rf {} + 2>/dev/null || true \
-    && find node_modules -name "examples" -type d -exec rm -rf {} + 2>/dev/null || true \
-    && find node_modules -name ".github" -type d -exec rm -rf {} + 2>/dev/null || true \
-    && find node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
+# Aggressively clean node_modules to reduce size
+RUN find node_modules -type f \( \
+        -name "*.map" -o \
+        -name "*.ts" -o \
+        -name "*.md" -o \
+        -name "*.txt" -o \
+        -name "*.yml" -o \
+        -name "*.yaml" -o \
+        -name "CHANGELOG*" -o \
+        -name "LICENSE*" -o \
+        -name "README*" -o \
+        -name ".npmignore" -o \
+        -name ".gitignore" \
+    \) -delete \
+    && find node_modules -type d \( \
+        -name "test" -o \
+        -name "tests" -o \
+        -name "__tests__" -o \
+        -name "examples" -o \
+        -name ".github" -o \
+        -name "docs" -o \
+        -name "doc" -o \
+        -name "coverage" -o \
+        -name ".nyc_output" \
+    \) -exec rm -rf {} + 2>/dev/null || true \
+    && rm -rf node_modules/.cache node_modules/.bin/*.cmd node_modules/.bin/*.ps1 2>/dev/null || true
 
 # ── Stage 2: production image ──
 FROM node:18-slim
 
 WORKDIR /app
 
-# Install only runtime dependencies (minimal set for Playwright)
+# Install minimal runtime dependencies for Playwright (only what's absolutely needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 \
       libatk-bridge2.0-0 \
@@ -62,61 +68,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libatspi2.0-0 \
       libgtk-3-0 \
       ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
-    && rm -rf /tmp/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && rm -rf /usr/share/doc /usr/share/man /usr/share/locale
 
-# Copy only necessary files from builder
-COPY --from=builder /app/node_modules /app/node_modules
-COPY --from=builder /app/bot_entry.js /app/healthcheck.js /app/
-COPY --from=builder /app/lib /app/lib
-COPY --from=builder /app/platforms /app/platforms
-COPY --from=builder /ms-playwright /ms-playwright
+# Copy only essential files from builder
+COPY --from=builder --chown=1000:1000 /app/node_modules /app/node_modules
+COPY --from=builder --chown=1000:1000 /app/bot_entry.js /app/healthcheck.js /app/
+COPY --from=builder --chown=1000:1000 /app/lib /app/lib
+COPY --from=builder --chown=1000:1000 /app/platforms /app/platforms
+COPY --from=builder --chown=1000:1000 /ms-playwright /ms-playwright
 
-# Create non-root user (security best practice)
-RUN groupadd -r botuser && useradd -r -g botuser -m botuser \
-    && chown -R botuser:botuser /app /ms-playwright
+# Create non-root user (use existing group if GID 1000 exists, otherwise create new)
+RUN if getent group 1000 > /dev/null 2>&1; then \
+        EXISTING_GROUP=$(getent group 1000 | cut -d: -f1); \
+        useradd -r -u 1000 -g $EXISTING_GROUP -m -d /home/botuser botuser || \
+        useradd -r -g $EXISTING_GROUP -m -d /home/botuser botuser; \
+    else \
+        groupadd -r -g 1000 botuser && \
+        useradd -r -u 1000 -g botuser -m -d /home/botuser botuser; \
+    fi && \
+    mkdir -p /home/botuser && chown -R botuser:$(getent group 1000 | cut -d: -f1) /home/botuser
 
-# Switch to botuser
 USER botuser
 
-# Set runtime environment variables with defaults
+# Only set essential Playwright environment variables
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    NODE_ENV=production \
-    MEETING_URL="" \
-    BOT_NAME="Clerk AI Bot" \
-    PLATFORM="google_meet" \
-    MEETING_PASSCODE="" \
-    RT_GATEWAY_URL="ws://44.203.236.62:8000" \
-    API_BASE_URL="http://44.203.236.62:8000/" \
-    MEETING_ID="" \
-    SESSION_ID="" \
-    JOIN_TIMEOUT_SEC=300 \
-    NAVIGATION_TIMEOUT_MS=45000 \
-    AUDIO_SAMPLE_RATE=16000 \
-    AUDIO_CHANNELS=1 \
-    ENABLE_AUDIO_CAPTURE="true" \
-    ENABLE_TTS_PLAYBACK="true" \
-    HEADLESS="true" \
-    BROWSER_LOCALE="en-US" \
-    BROWSER_ARGS="" \
-    LOG_LEVEL="info" \
-    TTS_PROVIDER="openai" \
-    TTS_API_KEY="" \
-    TTS_VOICE="alloy" \
-    TTS_SPEED=1.0 \
-    TTS_PITCH=1.0 \
-    TTS_GAIN=0.7 \
-    LLM_MOCK_URL="" \
-    STORAGE_STATE=""
-
-# Expose port for WebSocket / bot control
-EXPOSE 3000
+    NODE_ENV=production
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node healthcheck.js || exit 1
 
-# Start the bot entry script
 ENTRYPOINT ["node", "bot_entry.js"]

@@ -1,424 +1,294 @@
-const PlatformController = require('./base');
-
-const PRE_JOIN_SELECTORS = {
-  nameInputs: [
-    'input[aria-label="Your name"]',
-    'input[aria-label="Your name (required)"]',
-    'input[name="name"]',
-    'input[placeholder*="name" i]',
-    'input[aria-label*="name" i]',
-    'input[type="text"][data-initial-value]',
-    'input[type="text"]:not([autocomplete="off"])'
-  ],
-  joinButtons: [
-    'button[jsname="LgbsSe"][data-mdc-dialog-action=""]',
-    'button[jsname="LgbsSe"][aria-label*="Ask to join"]',
-    'button[jsname="LgbsSe"][aria-label*="Join now"]',
-    'div[role="button"][jsname="LgbsSe"]',
-    'button:has-text("Join now")',
-    'button:has-text("Ask to join")',
-    'button:has-text("Join meeting")'
-  ],
-  continueButtons: [
-    'button:has-text("Continue")',
-    'button:has-text("Continue without checking")',
-    'button:has-text("Try again")',
-    'button:has-text("Join meeting")',
-    'button[jsname="M2UYVd"]',
-    'button[jsname="Qx7uuf"]'
-  ]
-};
-
-// Keep selectors minimal; we only need Join buttons for this simplified flow
+const PlatformController = require("./base");
 
 class GoogleMeetController extends PlatformController {
-  async beforeNavigate() {
-    await this.grantPermissions();
+  static getBrowserArgs() {
+    return [];
+  }
+
+  static getPermissionsOrigin(meetingUrl) {
+    return "https://meet.google.com";
   }
 
   async beforeJoin() {
-    await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-    // Attempt join immediately after DOM is ready
-    // (no additional delay to avoid losing the window during navigation)
+    await this.page.waitForLoadState("domcontentloaded");
+    await this.page.waitForTimeout(2000);
+    this.logger.info("Page ready");
   }
 
   async performJoin() {
-    this.logger.info('Google Meet: performJoin() - immediate join');
-    // If a pre-join prompt is present, click it fast
-    try {
-      const prompt = await this.waitForVisibleSelector(PRE_JOIN_SELECTORS.continueButtons, 800);
-      if (prompt) {
-        try { await prompt.locator.click(); this.logger.info('Google Meet: clicked continue prompt', { selector: prompt.selector }); } catch (_) {}
-      }
-    } catch (_) {}
-    const quickSelectors = [
-      ...PRE_JOIN_SELECTORS.joinButtons,
-      'button[aria-label*="join" i]',
-      'div[role="button"][aria-label*="join" i]',
-      'button:has-text("Join now")',
-      'button:has-text("Ask to join")',
-      'div[role="button"]:has-text("Join")'
-    ];
-    for (let attempt = 0; attempt < 40; attempt++) {
-      if (this.page.isClosed()) {
-        this.logger.warn('Google Meet: page closed while attempting join');
-        return;
-      }
-      const quick = await this.waitForVisibleSelector(quickSelectors, 300);
-      if (quick) {
-        try {
-          // Prefer an enabled button if available
-          const enabledLocator = this.page.locator(`${quick.selector}:not([disabled]):not([aria-disabled="true"])`).first();
-          const enabledVisible = await enabledLocator.isVisible({ timeout: 300 }).catch(() => false);
-          if (enabledVisible) {
-            await enabledLocator.click({ trial: false });
-          } else {
-            await quick.locator.click({ trial: false });
-          }
-          // Verify that we moved into a join state (in-meeting UI or waiting room text)
-          const joined = await this.page.locator('[data-call-started="true"], div[aria-label="Call controls"], div[aria-label="Meeting details"]').first()
-            .isVisible({ timeout: 3000 }).catch(() => false);
-          const waiting = await this.page.getByText(/You'll join the meeting|Someone in the meeting should let you in soon/i)
-            .isVisible({ timeout: 1000 }).catch(() => false);
-          if (joined || waiting) {
-            this.logger.info('Google Meet: clicked join (confirmed state)', { selector: quick.selector, joined, waiting });
-            return;
-          }
-          this.logger.warn('Google Meet: join click did not change state yet, retrying', { selector: quick.selector, attempt });
-        } catch (_) {
-          try {
-            await this.page.evaluate((sel) => {
-              const el = document.querySelector(sel);
-              if (el && !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true') el.click();
-            }, quick.selector);
-            const joined = await this.page.locator('[data-call-started="true"], div[aria-label="Call controls"], div[aria-label="Meeting details"]').first()
-              .isVisible({ timeout: 3000 }).catch(() => false);
-            const waiting = await this.page.getByText(/You'll join the meeting|Someone in the meeting should let you in soon/i)
-              .isVisible({ timeout: 1000 }).catch(() => false);
-            if (joined || waiting) {
-              this.logger.info('Google Meet: clicked join via JS (confirmed state)', { selector: quick.selector, joined, waiting });
-              return;
-            }
-            this.logger.warn('Google Meet: JS join click did not change state yet, retrying', { selector: quick.selector, attempt });
-          } catch (_) {}
-        }
-      }
-      try { if (!this.page.isClosed()) await this.page.waitForTimeout(150); } catch (_) {}
-    }
-  }
+    this.logger.info("Looking for join button");
 
-  /**
-   * Find and click an enabled Join/Ask to join button.
-   * Returns true if a click was performed.
-   */
-  async clickEnabledJoinButton(seedSelector) {
-    const candidateSelectors = [
-      ...(seedSelector ? [seedSelector] : []),
-      ...PRE_JOIN_SELECTORS.joinButtons,
-      'button[aria-label*="join" i]'
-    ];
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      for (const selector of candidateSelectors) {
-        const enabled = this.page.locator(`${selector}:not([disabled]):not([aria-disabled="true"])`).first();
-        try {
-          await enabled.waitFor({ state: 'visible', timeout: 400 });
-          await enabled.click();
-          this.logger.info('Google Meet: clicked enabled join button', { selector });
-          return true;
-        } catch (_) {
-          // keep scanning
-        }
-      }
-      try { await this.page.waitForTimeout(250); } catch (_) {}
-    }
-    this.logger.debug('Google Meet: no enabled join button detected');
-    return false;
-  }
+    const joinButton = await this.clickFirstVisible(
+      [
+        'button:has-text("Ask to join")',
+        'button:has-text("Join now")',
+        'button:has-text("Switch here")',
+      ],
+      { timeout: 5000 }
+    ); // 5 seconds
 
-  async handleConsentPages() {
-    // No-op in simplified flow
+    if (joinButton) {
+      const buttonText = await joinButton.textContent().catch(() => "");
+      this.logger.info("Clicked join button", { buttonText });
+      // Store if we clicked "Ask to join" to detect waiting state later
+      this.clickedAskToJoin = buttonText.toLowerCase().includes("ask to join");
+    } else {
+      return false;
+      // throw new Error('Join button not found');
+    }
   }
 
   async ensureJoined() {
-    // No-op in simplified flow
-  }
+    // Check if we're waiting for admission - only send if isOrganizer config is set
+    // (This means there's an organizer who needs to admit the bot)
+    if (this.clickedAskToJoin && this.config.sendStatusUpdate) {
+      // Look for waiting/admission indicators in Google Meet
+      const waitingSelectors = [
+        'text="Waiting to be let in"',
+        'text="Waiting for the host to let you in"',
+        '[aria-label*="waiting"]',
+        '[aria-label*="Waiting"]',
+      ];
 
-  async afterJoin() {}
-
-  async hasBotJoined() {
-    if (this.page.isClosed()) {
-      return false;
-    }
-
-    try {
-      // Check for in-meeting UI elements:
-      // 1. Call controls or meeting controls
-      const controlsVisible = await Promise.race([
-        this.page.locator('[data-call-started="true"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('div[aria-label="Call controls"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('div[aria-label="Meeting details"]').isVisible({ timeout: 1000 }).catch(() => false)
-      ]);
-
-      // 2. Participant tiles or grid
-      const participantsVisible = await Promise.race([
-        this.page.locator('div[data-self-name]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('div[jsname="hxYeFb"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('div[data-participant-id]').isVisible({ timeout: 1000 }).catch(() => false)
-      ]);
-
-      // 3. Meeting toolbar/buttons
-      const toolbarVisible = await Promise.race([
-        this.page.locator('button[aria-label*="Turn off camera"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('button[aria-label*="Turn off microphone"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('button[aria-label*="Leave call"]').isVisible({ timeout: 1000 }).catch(() => false),
-        this.page.locator('button[data-mdc-dialog-action="close"]').isVisible({ timeout: 1000 }).catch(() => false)
-      ]);
-
-      // 4. Check if we're NOT on pre-join screen (absence of join buttons)
-      const notOnPrejoin = !(await Promise.race([
-        this.page.locator('button:has-text("Join now")').isVisible({ timeout: 500 }).catch(() => false),
-        this.page.locator('button:has-text("Ask to join")').isVisible({ timeout: 500 }).catch(() => false)
-      ]));
-
-      // Consider joined if we see meeting controls OR participants OR toolbar, AND not on pre-join
-      const isJoined = notOnPrejoin && (controlsVisible || participantsVisible || toolbarVisible);
-
-      if (isJoined) {
-        this.logger.info('Google Meet: bot has joined meeting', {
-          controlsVisible,
-          participantsVisible,
-          toolbarVisible,
-          notOnPrejoin
-        });
+      // Check if we're in waiting state
+      let isWaiting = false;
+      for (const selector of waitingSelectors) {
+        try {
+          const waitingElement = await this.page.locator(selector).first();
+          if (
+            await waitingElement.isVisible({ timeout: 3000 }).catch(() => false)
+          ) {
+            isWaiting = true;
+            this.logger.info("Detected waiting for admission state");
+            break;
+          }
+        } catch (e) {
+          // Continue checking other selectors
+        }
       }
 
-      return isJoined;
-    } catch (error) {
-      this.logger.debug('Google Meet: error checking if bot joined', { error: error.message });
-      return false;
+      // Send status if waiting state detected
+      if (isWaiting) {
+        await this.config.sendStatusUpdate(
+          "waiting_for_host",
+          "Waiting to be admitted into the meeting",
+          { platform: this.config.platform }
+        );
+      }
+    }
+
+    await this.page.waitForSelector('button[aria-label*="Leave call"]', {
+      timeout: 30000,
+    });
+    this.logger.info("Meeting joined - Leave call button visible");
+  }
+
+  async afterJoin() {
+
+    // Check if bot is organizer and has status update capability
+    const isOrganizer = this.config.isOrganizer === true || this.config.isOrganizer === "true";
+    if (isOrganizer && this.config.sendStatusUpdate) {
+      this.logger.info("Bot is organizer - setting up auto-admit functionality");
+
+      const peopleButton = await this.page.locator('button[aria-label^="People -"][aria-label*="joined"]').first();
+      if (await peopleButton.isVisible({ timeout: 3000 }).catch(() => false)) {
+        const isExpanded = await peopleButton.getAttribute('aria-expanded');
+        this.logger.info('People button state', { ariaExpanded: isExpanded });
+        
+        let panelIsOpen = false;
+        
+        // Check if panel is already open
+        if (isExpanded === 'true') {
+          this.logger.info('People panel is already open, starting admit polling');
+          panelIsOpen = true;
+        } else {
+          // Open panel if not already open
+          await peopleButton.click();
+          this.logger.info('Clicked "People" button to open participants panel');
+          // Wait for panel to fully open
+          await this.page.waitForTimeout(1500);
+          // Verify it opened
+          const expandedAfter = await peopleButton.getAttribute('aria-expanded');
+          if (expandedAfter === 'true') {
+            this.logger.info('People panel opened successfully, starting admit polling');
+            panelIsOpen = true;
+          } else {
+            this.logger.warn('People panel may not have opened, aria-expanded:', expandedAfter);
+          }
+        }
+        
+        // Only start polling if panel is confirmed open
+        if (panelIsOpen) {
+          this.logger.info('Starting polling for "Admit all" button');
+          this._startAdmitAllPolling();
+        } else {
+          this.logger.warn('Cannot start admit polling - People panel is not open');
+        }
+      } else {
+        this.logger.warn('"People" button not found or not visible');
+      }
+    } else {
+      this.logger.info(
+        "afterJoin skipped - bot is not organizer or status updates not available",
+        {
+          isOrganizer,
+          hasSendStatusUpdate: !!this.config.sendStatusUpdate,
+        }
+      );
     }
   }
 
-  getMeetingPresenceSelectors() {
-    // Selectors that indicate the meeting UI is still active
-    // If any of these are visible, the meeting is still ongoing
-    return [
-      '[data-call-started="true"]',
-      'div[aria-label="Call controls"]',
-      'div[aria-label="Meeting details"]',
-      'button[aria-label*="Turn off camera"]',
-      'button[aria-label*="Turn off microphone"]',
-      'button[aria-label*="Leave call"]',
-      'div[data-self-name]',
-      'div[jsname="hxYeFb"]',
-      'div[data-participant-id]',
-      // Meeting toolbar/controls
-      'div[role="toolbar"]',
-      // Video grid/stage
-      'div[data-self-name]',
-      // Check that we're NOT on pre-join screen (absence means we're in meeting)
-      // But we check for presence of meeting controls instead
-    ];
+  _startAdmitAllPolling() {
+    // Poll every 5 seconds for "Admit all" button and click it when found
+    this.logger.info('_startAdmitAllPolling: Starting interval for polling "Admit all" button');
+    this._admitAllPollCount = 0;
+    this._admitAllPollingActive = true;
+    
+    // Poll immediately first
+    const pollOnce = async () => {
+        // Check if polling should stop (cleanup was called)
+        if (!this._admitAllPollingActive) {
+          this.logger.info('Polling stopped - cleanup was called');
+          throw new Error('Polling stopped - cleanup was called');
+        }
+        
+        this._admitAllPollCount++;
+        this.logger.info(`Polling for "Admit all" button (attempt ${this._admitAllPollCount})`);
+        
+        try {
+          // Try multiple selectors for the "Admit all" button
+          const admitSelectors = [
+            'button:has-text("Admit")',
+            'button[aria-label*="Admit"]',
+            'button:has-text("Admit all")',
+          ];
+          
+          let foundButton = null;
+          for (const selector of admitSelectors) {
+            try {
+              const button = await this.page.locator(selector).first();
+              if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
+                foundButton = button;
+                this.logger.info(`Found "Admit" button using selector: ${selector}`);
+                break;
+              }
+            } catch (e) {
+              // Try next selector
+              continue;
+            }
+          }
+          
+          if (foundButton) {
+            this.logger.info('Clicking "Admit" button');
+            await foundButton.click();
+            
+            // Wait a moment for the confirmation modal/dialog to appear
+            await this.page.waitForTimeout(500);
+            
+            // Wait for the confirmation modal/dialog to appear
+            // Look for the dialog element first, then the button
+            try {
+              // Wait for dialog to appear (MDC dialog)
+              await this.page.waitForSelector('[data-mdc-dialog-action="ok"]', { 
+                timeout: 3000 
+              }).catch(() => null);
+              
+              // Look for the confirmation button in the modal with multiple selectors
+              const confirmSelectors = [
+                'button[data-mdc-dialog-action="ok"]',
+                'button.mUIrbf-LgbsSe[data-mdc-dialog-action="ok"]',
+                'button:has([jsname="V67aGc"]:has-text("Admit all"))',
+                'button:has-text("Admit all")[data-mdc-dialog-action="ok"]',
+              ];
+              
+              let confirmed = false;
+              for (const selector of confirmSelectors) {
+                try {
+                  const confirmButton = await this.page.locator(selector).first();
+                  if (await confirmButton.isVisible({ timeout: 1500 }).catch(() => false)) {
+                    this.logger.info('Found confirmation modal button - clicking to confirm');
+                    await confirmButton.click();
+                    confirmed = true;
+                    // Wait a bit after confirmation for modal to close
+                    if (this.config.sendStatusUpdate) {
+                      await this.config.sendStatusUpdate(
+                        "waiting_to_admit",
+                        "I have admitted you into the meeting",
+                        { platform: this.config.platform }
+                      );
+                    }
+                    await this.page.waitForTimeout(1000);
+                    break;
+                  }
+                } catch (e) {
+                  // Try next selector
+                  continue;
+                }
+              }
+              
+              if (!confirmed) {
+                this.logger.info('Confirmation modal button not found - modal may have auto-closed or not appeared');
+              }
+            } catch (e) {
+              this.logger.info('Error waiting for/clicking confirmation modal', {
+                error: e.message
+              });
+            }
+          } else {
+            this.logger.info('"Admit" button not found yet - will retry in 5 seconds');
+          }
+        } catch (e) {
+          this.logger.warn('Error checking/clicking "Admit all" button', {
+            error: e.message,
+            stack: e.stack,
+          });
+        }
+    };
+    
+    // Poll immediately, then set up interval
+    pollOnce().catch(err => {
+      this.logger.warn('Error in initial poll', { error: err.message });
+    });
+    
+    this._admitAllInterval = setInterval(pollOnce, 5000);
+    this.logger.info('_startAdmitAllPolling: Interval set up, will poll every 5 seconds');
+  }
+
+  async hasBotJoined() {
+    return true;
   }
 
   async leaveMeeting() {
-    const selectors = [
-      'button[aria-label*="Leave call"]',
-      'div[role="button"][aria-label*="Leave call"]',
-      'button:has-text("Leave call")'
-    ];
-    const locator = await this.clickFirstVisible(selectors, { timeout: 4000 });
-    if (!locator) {
-      throw new Error('Google Meet: unable to locate leave button');
-    }
-    this.logger.info('Google Meet: leave button clicked');
+    // Not implemented
   }
 
   async setMicrophone(enable) {
-    const locator = await this.ensureToggleState({
-      selectors: MIC_TOGGLE_SELECTORS,
-      desiredState: enable,
-      allowUnknown: true
-    }).catch(() => null);
-    if (locator) {
-      this.logger.info(`Google Meet: microphone set to ${enable ? 'on' : 'off'}`);
-    }
+    // Not implemented
   }
 
   async setCamera(enable) {
-    const locator = await this.ensureToggleState({
-      selectors: CAMERA_TOGGLE_SELECTORS,
-      desiredState: enable,
-      allowUnknown: true
-    }).catch(() => null);
-    if (locator) {
-      this.logger.info(`Google Meet: camera set to ${enable ? 'on' : 'off'}`);
-    }
+    // Not implemented
   }
 
-  async ensureNameField() {
-    // Wait for the page to fully load
-    await this.page.waitForTimeout(2000);
-    
-    // Debug: check what inputs are actually visible
-    const debugInfo = await this.page.evaluate(() => {
-      const collect = (root) => Array.from(root.querySelectorAll('input')).map(inp => ({
-        type: inp.type,
-        name: inp.name,
-        placeholder: inp.placeholder,
-        ariaLabel: inp.getAttribute('aria-label'),
-        visible: inp.offsetParent !== null,
-        value: inp.value
-      }));
-      const base = collect(document);
-      const byFrame = [];
-      for (const f of Array.from(document.querySelectorAll('iframe'))) {
-        try { if (f.contentDocument) byFrame.push(...collect(f.contentDocument)); } catch (_) {}
-      }
-      return [...base, ...byFrame];
-    });
-    this.logger.debug('Google Meet: visible inputs on page', { inputs: debugInfo });
-    
-    // Try simpler selectors first
-    const simpleSelectors = [
-      'input[aria-label="Your name"]',
-      'input[placeholder="Your name"]',
-      'input[type="text"]'
-    ];
-    
-    let match = null;
-    for (const selector of simpleSelectors) {
-      try {
-        const locator = this.page.locator(selector).first();
-        await locator.waitFor({ state: 'visible', timeout: 3000 });
-        match = { locator, selector };
-        break;
-      } catch (e) {
-        // Continue
-      }
-    }
-    
-    if (!match) {
-      match = await this.waitForVisibleSelector(PRE_JOIN_SELECTORS.nameInputs, 15000);
-    }
-    
-    // If still not found, search inside iframes explicitly
-    if (!match) {
-      for (const frame of this.page.frames()) {
-        for (const selector of [...simpleSelectors, ...PRE_JOIN_SELECTORS.nameInputs]) {
-          try {
-            const locator = frame.locator(selector).first();
-            await locator.waitFor({ state: 'visible', timeout: 800 });
-            match = { locator, selector };
-            break;
-          } catch (_) {}
-        }
-        if (match) break;
-      }
-    }
-    
-    // As a last resort, focus a likely text input and type the name
-    if (!match) {
-      const focused = await this.page.evaluate(() => {
-        const tryFocus = (root) => {
-          const el = root.querySelector('input[type="text"], input[aria-label*="name" i], input[placeholder*="name" i]');
-          if (el) { el.focus(); return true; }
-          return false;
-        };
-        if (tryFocus(document)) return true;
-        for (const f of Array.from(document.querySelectorAll('iframe'))) {
-          try { if (f.contentDocument && tryFocus(f.contentDocument)) return true; } catch (_) {}
-        }
-        return false;
-      });
-      if (focused) {
-        await this.page.keyboard.type(this.config.botName, { delay: 20 });
-        this.logger.info('Google Meet: filled guest name via focused input');
-        return;
-      }
-    }
-    
-    if (!match) {
-      this.logger.warn('Google Meet: name field not found; meeting may reject guest');
-      return;
-    }
-    await match.locator.fill(this.config.botName);
-    this.logger.info('Google Meet: filled guest name', { selector: match.selector });
+  getMeetingPresenceSelectors() {
+    return [];
   }
 
-  async handleContinuePrompts() {
-    const prompt = await this.waitForVisibleSelector(PRE_JOIN_SELECTORS.continueButtons, 4000);
-    if (prompt) {
-      await prompt.locator.click();
-      this.logger.info('Google Meet: clicked continue/join prompt', { selector: prompt.selector });
+  async cleanup() {
+    // Stop the admit all polling interval if it's running
+    this.logger.info('Stopping admit all polling');
+    this._admitAllPollingActive = false;
+    
+    if (this._admitAllInterval) {
+      clearInterval(this._admitAllInterval);
+      this._admitAllInterval = null;
+    }
+    
+    // Check if page is closed
+    if (this.page && this.page.isClosed()) {
+      this.logger.info('Polling stopped - page is closed');
     }
   }
-
-  async waitForVisibleSelector(selectors, timeoutMs = 10000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (this.page.isClosed()) {
-        return null;
-      }
-      for (const selector of selectors) {
-        const locator = this.page.locator(selector).first();
-        try {
-          await locator.waitFor({ state: 'visible', timeout: 500 });
-          this.logger.debug('Google Meet: found visible element', { selector });
-          return { locator, selector };
-        } catch (error) {
-          // If page closed or context gone, stop trying gracefully
-          if (/Target page, context or browser has been closed/i.test(error.message || '')) {
-            return null;
-          }
-          // keep scanning
-        }
-      }
-      try { if (!this.page.isClosed()) await this.page.waitForTimeout(250); } catch (_) { return null; }
-    }
-    this.logger.debug('Google Meet: no visible selector found', { selectors, timeoutMs });
-    return null;
-  }
-
-  async handleBlockedScreens() {
-    const text = await this.page.textContent('body').catch(() => '');
-    if (!text) {
-      return;
-    }
-    
-    this.logger.debug('Google Meet: page content preview', { 
-      textPreview: text.substring(0, 200),
-      pageUrl: this.page.url()
-    });
-    
-    // Check for browser compatibility message
-    if (/doesn't work on your browser/i.test(text) || /download chrome/i.test(text) || /doesn.t work/i.test(text)) {
-      this.logger.error('Google Meet: browser compatibility issue - Meet detected automated browser');
-      throw new Error('Google Meet: browser is blocked by Meet (automation detected). Try using a different meeting link or wait for meeting host approval.');
-    }
-    
-    // Check for "can't join" message - but allow join flow to proceed (might have "Ask to join" button)
-    if (/you can't join/i.test(text) || /can.t join this video/i.test(text)) {
-      // Check if there's any join button available (Ask to join, Join now, etc.)
-      const anyJoinButton = await this.waitForVisibleSelector(PRE_JOIN_SELECTORS.joinButtons, 3000);
-      if (anyJoinButton) {
-        this.logger.warn('Google Meet: meeting may require admission, but join button found - will attempt join and wait for host approval if needed');
-        // Don't throw - let the join flow proceed and wait for admission in ensureJoined()
-      } else {
-        this.logger.warn('Google Meet: "can\'t join" message detected but no join button found - will attempt to continue anyway');
-        // Still don't throw - let the join flow try and fail gracefully later if needed
-      }
-    }
-    
-    if (/meeting code|enter a code/i.test(text) && !/Join now/i.test(text)) {
-      this.logger.warn('Google Meet: meeting code prompt detected; link may be invalid');
-    }
-    if (/you can try again/i.test(text)) {
-      this.logger.warn('Google Meet: meeting unavailable (Try again later screen)');
-    }
-  }
-
 }
 
 module.exports = GoogleMeetController;

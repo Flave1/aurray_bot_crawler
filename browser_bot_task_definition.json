@@ -36,11 +36,11 @@
         },
         {
           "name": "RT_GATEWAY_URL",
-          "value": "${RT_GATEWAY_URL:-ws://44.203.236.62:8000}"
+          "value": "${RT_GATEWAY_URL:-wss://api.auray.net}"
         },
         {
           "name": "API_BASE_URL",
-          "value": "${API_BASE_URL:-http://44.203.236.62:8000}"
+          "value": "${API_BASE_URL:-https://api.auray.net}"
         },
         {
           "name": "MEETING_ID",
