@@ -1,5 +1,5 @@
 {
-  "name": "clerk-browser-bot",
+  "name": "aurray-bot_staging",
   "version": "1.0.0",
   "description": "Headless browser bot for joining meetings and streaming audio",
   "main": "bot_entry.js",
@@ -17,7 +17,7 @@
     "audio",
     "streaming"
   ],
-  "author": "Clerk AI Team",
+  "author": "Aurray AI Team",
   "license": "MIT",
   "dependencies": {
     "playwright": "^1.40.0",
@@ -30,10 +30,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/clerk"
+    "url": "https://github.com/your-org/aurray"
   },
   "bugs": {
-    "url": "https://github.com/your-org/clerk/issues"
+    "url": "https://github.com/your-org/aurray/issues"
   },
-  "homepage": "https://github.com/your-org/clerk#readme"
+  "homepage": "https://github.com/your-org/aurray#readme"
 }

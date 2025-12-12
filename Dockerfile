@@ -12,12 +12,13 @@ RUN npm ci --only=production --no-audit --no-fund --ignore-scripts \
     && rm -rf /tmp/*
 
 # Copy source files
-COPY bot_entry.js healthcheck.js ./
+COPY bot_entry.js bot_entry_v2.js healthcheck.js audio-worklet.js google_auth_state.json ./
 COPY lib/ ./lib/
 COPY platforms/ ./platforms/
 
-# Install Playwright Chromium only (minimal deps)
-RUN npx playwright install chromium --with-deps \
+# Install Playwright Chromium only (headless mode)
+# Note: --with-deps installs system deps, but we'll remove GUI libs in runtime stage
+RUN npx playwright install chromium \
     && mv /root/.cache/ms-playwright /ms-playwright \
     && rm -rf /root/.cache /tmp/*
 
@@ -53,7 +54,9 @@ FROM node:18-slim
 
 WORKDIR /app
 
-# Install minimal runtime dependencies for Playwright (only what's absolutely needed)
+# Install runtime dependencies for Playwright headless mode
+# GPU acceleration libraries (mesa) for smoother rendering
+# Full sound stack (pulseaudio, alsa) for WebRTC compatibility
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 \
       libatk-bridge2.0-0 \
@@ -65,19 +68,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgbm1 \
       libxss1 \
       libasound2 \
-      libatspi2.0-0 \
-      libgtk-3-0 \
+      libxfixes3 \
+      libxshmfence1 \
+      libxcb1 \
+      libx11-6 \
+      libx11-xcb1 \
+      libxext6 \
+      libxrender1 \
       ca-certificates \
+      # GPU acceleration libraries (mesa)
+      libgl1-mesa-dri \
+      libgl1-mesa-glx \
+      # Full sound stack for WebRTC
+      pulseaudio \
+      alsa-utils \
+      libpulse0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    && rm -rf /usr/share/doc /usr/share/man /usr/share/locale
+    && rm -rf /usr/share/doc /usr/share/man /usr/share/locale /usr/share/info
 
 # Copy only essential files from builder
 COPY --from=builder --chown=1000:1000 /app/node_modules /app/node_modules
-COPY --from=builder --chown=1000:1000 /app/bot_entry.js /app/healthcheck.js /app/
+COPY --from=builder --chown=1000:1000 /app/bot_entry.js /app/bot_entry_v2.js /app/healthcheck.js /app/audio-worklet.js /app/google_auth_state.json /app/
 COPY --from=builder --chown=1000:1000 /app/lib /app/lib
 COPY --from=builder --chown=1000:1000 /app/platforms /app/platforms
 COPY --from=builder --chown=1000:1000 /ms-playwright /ms-playwright
+
 
 # Create non-root user (use existing group if GID 1000 exists, otherwise create new)
 RUN if getent group 1000 > /dev/null 2>&1; then \
@@ -101,4 +117,4 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node healthcheck.js || exit 1
 
-ENTRYPOINT ["node", "bot_entry.js"]
+ENTRYPOINT ["node", "bot_entry_v2.js"]

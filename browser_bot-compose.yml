@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  browser-bot:
+  bot_staging:
     build:
       context: ../../browser_bot
       dockerfile: Dockerfile
-    image: clerk-browser-bot:latest
-    container_name: clerk-browser-bot-dev
+    image: aurray-bot_staging:latest
+    container_name: bot_staging-dev
     environment:
       # Meeting Configuration
       - MEETING_URL=${MEETING_URL}
@@ -16,7 +16,7 @@ services:
       - PLATFORM=${PLATFORM:-google_meet}
       
       # Bot Configuration
-      - BOT_NAME=${BOT_NAME:-Clerk AI Bot}
+      - BOT_NAME=${BOT_NAME:-Aurray Bot}
       
       # Backend URLs (updated to use production IP)
       - RT_GATEWAY_URL=${RT_GATEWAY_URL:-ws://api.auray.net}

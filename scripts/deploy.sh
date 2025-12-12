@@ -1,23 +1,36 @@
 #!/bin/bash
-# Script to build and deploy the browser bot to AWS ECS
-# Usage: ./scripts/deploy.sh [cluster-name] [service-name] [image-tag]
+# Script to build and deploy Browser Bot to AWS ECS
+# Usage: ./scripts/deploy.sh [cluster-name] [image-tag]
+# Environment: Set ENVIRONMENT=production for production, defaults to staging
+# Note: Browser bots are launched on-demand, so this only registers the task definition
 
 set -euo pipefail
 
 AWS_REGION="us-east-1"
 AWS_ACCOUNT_ID="588412562130"
-ECR_REPOSITORY="bot_staging"
-IMAGE_TAG="${3:-browser-bot-$(date +%Y%m%d%H%M%S)}"
-CLUSTER_NAME="${1:-clerk-cluster}"
-SERVICE_NAME="${2:-browser-bot-service}"
+ENVIRONMENT="${ENVIRONMENT:-staging}"
+
+# Use single repository with environment-based tags
+ECR_REPOSITORY="aurray_bot"
+if [ "$ENVIRONMENT" = "production" ]; then
+    IMAGE_TAG="${2:-production-latest}"
+    CLUSTER_NAME="${1:-aurray-cluster}"
+    TASK_DEF_JSON="aurray_bot_production.json"
+    CONTAINER_NAME="bot_production"
+else
+    IMAGE_TAG="${2:-staging-latest}"
+    CLUSTER_NAME="${1:-aurray-cluster}"
+    TASK_DEF_JSON="aurray_bot_staging.json"
+    CONTAINER_NAME="bot_staging"
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKERFILE_PATH="$ROOT_DIR/Dockerfile"
-TASK_DEF_JSON="$ROOT_DIR/ecs-task-def.json"
+TASK_DEF_PATH="$ROOT_DIR/${TASK_DEF_JSON}"
 
-if [[ ! -f "$TASK_DEF_JSON" ]]; then
-  echo "❌ Task definition template not found at $TASK_DEF_JSON"
-  echo "Please create ecs-task-def.json with the base task definition before deploying."
+if [[ ! -f "$TASK_DEF_PATH" ]]; then
+  echo "❌ Task definition not found at $TASK_DEF_PATH"
+  echo "Please create the task definition file before deploying."
   exit 1
 fi
 
@@ -27,6 +40,13 @@ step() {
   echo ""
   echo "🔹 $1"
 }
+
+echo "🚀 Starting browser bot deployment..."
+echo "Environment: $ENVIRONMENT"
+echo "Repository: $ECR_REPOSITORY"
+echo "Image Tag: $IMAGE_TAG"
+echo "Cluster: $CLUSTER_NAME"
+echo ""
 
 step "Logging into ECR..."
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -41,19 +61,23 @@ step "Pushing image to ECR..."
 docker push "$ECR_IMAGE_URI"
 
 step "Preparing task definition with new image..."
-TEMP_TASK_DEF="/tmp/browser-bot-task-${IMAGE_TAG}.json"
+TEMP_TASK_DEF="/tmp/aurray-bot-task-${IMAGE_TAG}.json"
 python3 <<EOF > "$TEMP_TASK_DEF"
 import json
 from pathlib import Path
 
-task_def_path = Path("$TASK_DEF_JSON")
+task_def_path = Path("$TASK_DEF_PATH")
 with task_def_path.open() as f:
     task_def = json.load(f)
 
 if not task_def.get("containerDefinitions"):
-    raise SystemExit("Task definition template must contain at least one container definition")
+    raise SystemExit("Task definition must contain at least one container definition")
 
-task_def["containerDefinitions"][0]["image"] = "$ECR_IMAGE_URI"
+# Update image URI for the container
+for container in task_def["containerDefinitions"]:
+    if container["name"] == "$CONTAINER_NAME":
+        container["image"] = "$ECR_IMAGE_URI"
+        break
 
 print(json.dumps(task_def, indent=2))
 EOF
@@ -65,32 +89,10 @@ TASK_DEF_ARN=$(aws ecs register-task-definition \
   --query 'taskDefinition.taskDefinitionArn' \
   --output text)
 rm -f "$TEMP_TASK_DEF"
-echo "✅ Task definition: $TASK_DEF_ARN"
 
-step "Updating ECS service..."
-aws ecs update-service \
-  --region "$AWS_REGION" \
-  --cluster "$CLUSTER_NAME" \
-  --service "$SERVICE_NAME" \
-  --task-definition "$TASK_DEF_ARN" \
-  --force-new-deployment > /dev/null
-
-echo "✅ Service update initiated for $SERVICE_NAME on $CLUSTER_NAME"
-
-step "Waiting for service to stabilize..."
-aws ecs wait services-stable \
-  --cluster "$CLUSTER_NAME" \
-  --services "$SERVICE_NAME" \
-  --region "$AWS_REGION"
-
+echo "✅ Task definition registered: $TASK_DEF_ARN"
+echo ""
 echo "✅ Deployment completed successfully!"
-
-# Step: Clean up old browser-bot tasks
-step "Cleaning up old browser-bot tasks..."
-CLEANUP_SCRIPT="$(dirname "$0")/cleanup-old-tasks.sh"
-if [ -f "$CLEANUP_SCRIPT" ]; then
-    bash "$CLEANUP_SCRIPT" "$CLUSTER_NAME" "$SERVICE_NAME"
-else
-    echo "⚠️  Cleanup script not found at: $CLEANUP_SCRIPT"
-    echo "   Skipping cleanup. Old tasks may still be running."
-fi
+echo ""
+echo "ℹ️  Note: Browser bots are launched on-demand by the backend orchestrator."
+echo "   The task definition is now ready to use for launching bot tasks."

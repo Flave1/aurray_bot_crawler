@@ -1,0 +1,68 @@
+{
+  "family": "aurray-bot-staging",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::588412562130:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::588412562130:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "bot_staging",
+      "image": "588412562130.dkr.ecr.us-east-1.amazonaws.com/aurray_bot:staging-latest",
+      "essential": true,
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "HEADLESS",
+          "value": "true"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "value": "info"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/aurray_bot_staging",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "linuxParameters": {
+        "initProcessEnabled": true
+      },
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 65536,
+          "hardLimit": 65536
+        },
+        {
+          "name": "nproc",
+          "softLimit": 32768,
+          "hardLimit": 32768
+        }
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "key": "Environment",
+      "value": "staging"
+    },
+    {
+      "key": "Service",
+      "value": "aurray-bot_staging"
+    },
+    {
+      "key": "ManagedBy",
+      "value": "terraform"
+    }
+  ]
+}
+

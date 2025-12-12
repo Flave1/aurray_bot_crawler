@@ -5,9 +5,13 @@
 !package.json
 !package-lock.json
 !bot_entry.js
+!bot_entry_v2.js
 !healthcheck.js
+!realtime_proxy.js
+!audio-worklet.js
 !lib/
 !platforms/
+!google_auth_state.json
 
 # Exclude everything else
 __tests__/

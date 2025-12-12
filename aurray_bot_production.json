@@ -1,5 +1,5 @@
 {
-  "family": "clerk-browser-bot",
+  "family": "aurray-bot-production",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
@@ -8,8 +8,8 @@
   "taskRoleArn": "arn:aws:iam::588412562130:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
-      "name": "browser-bot",
-      "image": "588412562130.dkr.ecr.us-east-1.amazonaws.com/bot_staging:v1.0.0",
+      "name": "bot_production",
+      "image": "588412562130.dkr.ecr.us-east-1.amazonaws.com/aurray_bot:production-latest",
       "essential": true,
       "environment": [
         {
@@ -28,7 +28,7 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/clerk-browser-bot",
+          "awslogs-group": "/ecs/aurray_bot_production",
           "awslogs-region": "us-east-1",
           "awslogs-stream-prefix": "ecs"
         }
@@ -53,15 +53,15 @@
   "tags": [
     {
       "key": "Environment",
-      "value": "staging"
+      "value": "production"
     },
     {
       "key": "Service",
-      "value": "clerk-browser-bot"
+      "value": "aurray-bot-production"
     },
     {
       "key": "ManagedBy",
-      "value": "clerk-orchestrator"
+      "value": "terraform"
     }
   ]
 }
