@@ -17,7 +17,8 @@
    - Click "New Project"
    - Select "Deploy from GitHub repo"
    - Choose your repository
-   - Select the `browser_bot` directory as the root
+   - **IMPORTANT**: After the service is created, go to **Settings → Root Directory** and set it to `browser_bot`
+   - This tells Railway to use `browser_bot` as the root directory (not the repo root)
 
 3. **Configure Environment Variables**
    In Railway dashboard, go to your service → Variables tab:
@@ -141,6 +142,17 @@ Endpoints:
 3. Railway provides SSL automatically
 
 ## Troubleshooting
+
+### "Cannot find module '/app/server.js'" Error
+**This means Railway is deploying from the wrong directory.**
+
+**Solution:**
+1. Go to Railway dashboard → Your service → **Settings**
+2. Find **"Root Directory"** setting
+3. Set it to: `browser_bot`
+4. Click **"Redeploy"** or push a new commit
+
+This tells Railway to use the `browser_bot` directory as the root, so it will find `server.js` at the correct path.
 
 ### Build Fails
 - Check logs in Railway dashboard
