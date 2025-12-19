@@ -1,5 +1,7 @@
 # Railway Deployment Guide for Browser Bot
 
+This guide covers deploying the browser bot to Railway **without Docker**. Railway uses Nixpacks to automatically build and deploy Node.js applications.
+
 ## Prerequisites
 
 1. Railway account: https://railway.app (sign up with GitHub)
@@ -19,6 +21,7 @@
    - Choose your repository
    - **IMPORTANT**: After the service is created, go to **Settings → Root Directory** and set it to `browser_bot`
    - This tells Railway to use `browser_bot` as the root directory (not the repo root)
+   - Railway will automatically detect Node.js and use `nixpacks.toml` for the build
 
 3. **Configure Environment Variables**
    In Railway dashboard, go to your service → Variables tab:

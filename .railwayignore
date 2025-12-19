@@ -1,0 +1,46 @@
+# Railway ignore file - files to exclude from deployment
+
+# Dependencies (installed during build)
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Test files
+__tests__/
+*.test.js
+*.spec.js
+
+# Documentation
+*.md
+!README.md
+
+# Development files
+.env.local
+.env.*.local
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.map
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Screenshots (generated at runtime)
+logs/screenshots/
+
+# Fake test files
+fake.wav
+fake.y4m
+sound_wave.png
+

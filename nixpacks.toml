@@ -3,8 +3,8 @@ nixPkgs = ["nodejs-18_x", "chromium"]
 
 [phases.install]
 cmds = [
-  "npm install",
-  "npx playwright install chromium"
+  "npm ci",
+  "npx playwright install chromium --with-deps || npx playwright install chromium"
 ]
 
 [start]
