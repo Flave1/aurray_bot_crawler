@@ -2477,6 +2477,18 @@ class BrowserBot {
     
     // Priority 1: Add to playback queue instead of playing immediately
     this.playbackQueue.push(samples48kArray);
+    
+    // Log queue status periodically
+    if (this.audioOutputChunksReceived % 10 === 0 || this.audioOutputChunksReceived < 5) {
+      this.logger.debug("📦 Audio chunk queued", {
+        chunkNumber: this.audioOutputChunksReceived,
+        queueLength: this.playbackQueue.length,
+        isPlayingQueue: this.isPlayingQueue,
+        shouldAcceptNewChunks: this.shouldAcceptNewChunks,
+        samplesCount: samples48kArray.length
+      });
+    }
+    
     this.playAudioQueue();
   }
 
@@ -2487,16 +2499,30 @@ class BrowserBot {
   async playAudioQueue() {
     // Prevent concurrent queue processing
     if (this.isPlayingQueue || this.playbackQueue.length === 0) {
+      if (this.playbackQueue.length > 0 && !this.isPlayingQueue) {
+        this.logger.debug("📦 playAudioQueue: Already processing or queue empty", {
+          isPlayingQueue: this.isPlayingQueue,
+          queueLength: this.playbackQueue.length
+        });
+      }
       return;
     }
 
     // Early return if page is closed or connection is invalid
     if (!this.page || this.page.isClosed() || !this.openaiConnected) {
+      this.logger.warn("⚠️ playAudioQueue: Clearing queue - page closed or not connected", {
+        hasPage: !!this.page,
+        pageClosed: this.page?.isClosed(),
+        openaiConnected: this.openaiConnected,
+        queueLength: this.playbackQueue.length
+      });
       this.playbackQueue = []; // Clear queue if connection is invalid
       return;
     }
 
     this.isPlayingQueue = true;
+    const queueLengthAtStart = this.playbackQueue.length;
+    let chunksProcessed = 0;
 
     try {
       // Process queue sequentially - one chunk at a time
@@ -2506,6 +2532,7 @@ class BrowserBot {
         const audioData = this.playbackQueue.shift();
         if (!audioData) continue;
 
+        chunksProcessed++;
         try {
           // Inject chunk and wait for it to complete before processing next
           await this.playAudioToMeeting(audioData);
@@ -2514,11 +2541,23 @@ class BrowserBot {
           if (!error.message.includes("closed") && !error.message.includes("Target page")) {
             this.logger.error("❌ Failed to play audio chunk from queue", {
               error: error.message,
+              errorStack: error.stack,
               samples: audioData.length,
+              chunkNumber: chunksProcessed,
+              queueLength: this.playbackQueue.length
             });
           }
           // Continue with next chunk even if this one failed
         }
+      }
+      
+      // Log queue completion
+      if (queueLengthAtStart > 0) {
+        this.logger.debug("✅ playAudioQueue: Completed", {
+          chunksProcessed: chunksProcessed,
+          queueLengthAtStart: queueLengthAtStart,
+          queueLengthAfter: this.playbackQueue.length
+        });
       }
       
       // Priority 1: After queue is empty, reset flag for next response
@@ -2533,29 +2572,89 @@ class BrowserBot {
   async playAudioToMeeting(audioData) {
     // Early return if page is closed or connection is invalid
     if (!this.page || this.page.isClosed() || !this.openaiConnected) {
+      this.logger.debug("⚠️ playAudioToMeeting: Skipping - page closed or not connected", {
+        hasPage: !!this.page,
+        pageClosed: this.page?.isClosed(),
+        openaiConnected: this.openaiConnected
+      });
       return;
     }
     
     try {
-      await this.page.evaluate((samples) => {
+      // Get virtual mic status before injection for debugging
+      const statusBefore = await this.page.evaluate(() => {
+        return {
+          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+          hasVirtualStream: !!window.aurrayVirtualMicStream,
+          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A',
+          streamId: window.aurrayVirtualMicStream?.id || 'N/A',
+          trackState: window.aurrayVirtualMicStream?.getAudioTracks()[0]?.readyState || 'N/A',
+          trackEnabled: window.aurrayVirtualMicStream?.getAudioTracks()[0]?.enabled || false
+        };
+      }).catch(() => ({ error: 'Could not evaluate status' }));
+      
+      const result = await this.page.evaluate((samples) => {
+        const status = {
+          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+          hasVirtualStream: !!window.aurrayVirtualMicStream,
+          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A',
+          bufferLengthBefore: 0,
+          bufferLengthAfter: 0,
+          samplesInjected: samples.length,
+          injectionSuccess: false
+        };
+        
         if (typeof window.aurrayInjectAudio48k === "function") {
+          // Get buffer length before injection (if accessible)
+          if (window.__aurrayBufferLength) {
+            status.bufferLengthBefore = window.__aurrayBufferLength();
+          }
+          
+          // Inject audio
           window.aurrayInjectAudio48k(samples);
+          status.injectionSuccess = true;
+          
+          // Get buffer length after injection (if accessible)
+          if (window.__aurrayBufferLength) {
+            status.bufferLengthAfter = window.__aurrayBufferLength();
+          }
         } else {
           throw new Error("aurrayInjectAudio48k not found");
         }
+        
+        return status;
       }, audioData);
       
-      // Audio injected successfully - no need to log every injection
+      // Log injection details (only every 10th chunk to avoid spam)
+      if (this.audioOutputChunksReceived % 10 === 0 || this.audioOutputChunksReceived < 5) {
+        this.logger.info("🔊 Audio injection status", {
+          chunkNumber: this.audioOutputChunksReceived,
+          samplesInjected: result.samplesInjected,
+          injectionSuccess: result.injectionSuccess,
+          audioContextState: result.audioContextState,
+          hasVirtualStream: result.hasVirtualStream,
+          trackState: statusBefore.trackState,
+          trackEnabled: statusBefore.trackEnabled,
+          bufferLengthBefore: result.bufferLengthBefore,
+          bufferLengthAfter: result.bufferLengthAfter
+        });
+      }
+      
     } catch (error) {
       // Check if it's a page-closed error (expected during cleanup)
       if (error.message.includes("closed") || error.message.includes("Target page")) {
+        this.logger.debug("⚠️ playAudioToMeeting: Page closed during injection (expected during cleanup)");
         return; // Silently return, don't log or throw
       }
       
-      // For other errors, log but don't throw to prevent error loops
+      // For other errors, log with full details
       this.logger.error("❌ Error playing audio to meeting", {
         error: error.message,
+        errorStack: error.stack,
         samples: audioData.length,
+        hasPage: !!this.page,
+        pageClosed: this.page?.isClosed(),
+        openaiConnected: this.openaiConnected
       });
       // Don't throw - let the error handler in handleAudioChunk deal with it
     }
@@ -2673,14 +2772,37 @@ class BrowserBot {
 
       window.aurrayVirtualMicStream = dest.stream;
       let totalSamplesInjected = 0; // Declare the variable
+      
+      // Expose buffer length for debugging
+      window.__aurrayBufferLength = () => buffer.length;
+      
       window.aurrayInjectAudio48k = (samples) => {
         if (!samples || !samples.length) {
+          console.warn("[AURRAY] aurrayInjectAudio48k called with empty samples", {
+            samplesType: typeof samples,
+            samplesLength: samples?.length,
+            isArray: Array.isArray(samples)
+          });
           return;
         }
+        
+        const samplesBefore = buffer.length;
         for (let i = 0; i < samples.length; i++) {
           buffer.push(samples[i]);
         }
         totalSamplesInjected += samples.length;
+        
+        // Log every 10th injection or first few to debug
+        if (totalSamplesInjected % 10000 === 0 || totalSamplesInjected < 1000) {
+          console.log("[AURRAY] Audio injected into buffer", {
+            samplesInjected: samples.length,
+            totalSamplesInjected: totalSamplesInjected,
+            bufferLengthBefore: samplesBefore,
+            bufferLengthAfter: buffer.length,
+            audioContextState: ctx.state,
+            readIndex: readIndex
+          });
+        }
       };
       
       const finalContextInfo = {
@@ -2692,12 +2814,24 @@ class BrowserBot {
         trackCount: dest.stream.getAudioTracks().length,
         trackIds: dest.stream.getAudioTracks().map(t => t.id),
         trackStates: dest.stream.getAudioTracks().map(t => t.readyState),
+        trackEnabled: dest.stream.getAudioTracks().map(t => t.enabled),
+        trackMuted: dest.stream.getAudioTracks().map(t => t.muted),
         audioContextState: ctx.state,
         hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
         isTeams: isTeams,
         trackConfigured: isTeams && audioTrack ? typeof audioTrack.getSettings === 'function' : false
       };
-      // Virtual microphone initialized - console log removed (too verbose)
+      console.log("[AURRAY] Virtual microphone initialized", finalContextInfo);
+      
+      // Try to resume AudioContext if suspended (common in headless mode)
+      if (ctx.state === 'suspended') {
+        console.log("[AURRAY] AudioContext is suspended, attempting to resume...");
+        ctx.resume().then(() => {
+          console.log("[AURRAY] AudioContext resumed successfully", { state: ctx.state });
+        }).catch((err) => {
+          console.error("[AURRAY] Failed to resume AudioContext", { error: err.message, state: ctx.state });
+        });
+      }
     });
 
     await this.page.waitForFunction(() => !!window.aurrayVirtualMicStream, {
