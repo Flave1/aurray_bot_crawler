@@ -4,10 +4,11 @@
   "description": "Headless browser bot for joining meetings and streaming audio",
   "main": "bot_entry.js",
   "scripts": {
-    "start": "node bot_entry.js",
-    "dev": "node --inspect bot_entry.js",
+    "start": "node server.js",
+    "dev": "node --inspect server.js",
     "healthcheck": "node healthcheck.js",
-    "test": "node --test __tests__"
+    "test": "node --test __tests__",
+    "postinstall": "npx playwright install chromium --with-deps || npx playwright install chromium"
   },
   "keywords": [
     "meeting",
@@ -23,7 +24,8 @@
     "playwright": "^1.40.0",
     "ws": "^8.14.2",
     "axios": "^1.6.0",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "express": "^4.18.2"
   },
   "engines": {
     "node": ">=18.0.0"

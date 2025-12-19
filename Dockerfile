@@ -76,6 +76,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxext6 \
       libxrender1 \
       ca-certificates \
+      # Required for Chromium/Playwright (CUPS printing support)
+      libcups2 \
       # GPU acceleration libraries (mesa)
       libgl1-mesa-dri \
       libgl1-mesa-glx \
@@ -114,7 +116,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NODE_ENV=production
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD node healthcheck.js || exit 1
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+#     CMD node healthcheck.js || exit 1
 
 ENTRYPOINT ["node", "bot_entry_v2.js"]

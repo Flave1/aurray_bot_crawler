@@ -11,6 +11,7 @@ const { v4: uuidv4 } = require("uuid");
 const https = require("https");
 const http = require("http");
 const { URL } = require("url");
+const { spawn } = require("child_process");
 
 const {
   getPlatformBrowserArgs,
@@ -30,6 +31,7 @@ const config = {
   botName: process.env.BOT_NAME || "Aurray Bot",
   platform: process.env.PLATFORM || "google_meet",
   headless: parseBoolean(process.env.HEADLESS, true),
+  shouldSendStatus: parseBoolean(process.env.SHOULD_SEND_STATUS, false),
   browserEngine: (process.env.BROWSER_ENGINE || "chromium").toLowerCase(),
   browserLocale: process.env.BROWSER_LOCALE || "en-US",
   browserArgs: process.env.BROWSER_ARGS
@@ -42,13 +44,11 @@ const config = {
     10
   ),
   logLevel: (process.env.LOG_LEVEL || "info").toLowerCase(),
-  rtGatewayUrl: process.env.RT_GATEWAY_URL || "ws://localhost:8000",
   sessionId: process.env.SESSION_ID || uuidv4(),
-  apiBaseUrl: process.env.API_BASE_URL || "http://localhost:8000",
+  apiBaseUrl: process.env.API_BASE_URL,
   isOrganizer: parseBoolean(process.env.IS_ORGANIZER, false),
   openaiApiKey: process.env.OPENAI_API_KEY,
-  openaiRealtimeApiUrl: process.env.OPENAI_REALTIME_API_URL || "https://api.openai.com/v1/realtime",
-  openaiRealtimeWsUrl: process.env.OPENAI_REALTIME_WS_URL, // WebSocket URL with token (will be overridden by local proxy if available)
+  openaiRealtimeWsUrl: process.env.OPENAI_REALTIME_WS_URL, // WebSocket URL with token (provided by backend)
   voice: process.env.VOICE || "alloy",
   instructions: process.env.INSTRUCTIONS || "You are a helpful meeting assistant. Keep responses concise and professional.",
 };
@@ -109,6 +109,11 @@ function pcm16ToFloat32(pcm16Array) {
 const fakeWavPath = path.resolve(__dirname, 'fake.wav');
 const fakeY4mPath = path.resolve(__dirname, 'sound_wave.png');
 const DEFAULT_BROWSER_ARGS = [
+  "--disable-features=AudioServiceOutOfProcess",
+  "--disable-background-timer-throttling",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+  "--no-sandbox",
    "--disable-blink-features=AutomationControlled",
   "--autoplay-policy=no-user-gesture-required",
   "--use-fake-ui-for-media-stream",
@@ -192,6 +197,34 @@ class BrowserBot {
     this.audioInputFramesSent = 0;
     this.audioOutputChunksReceived = 0;
     this.lastAudioDiagnosticLog = Date.now();
+    
+    // Adaptive throttling to match WebSocket drain rate
+    this.audioFrameSkipCounter = 0; // Counter for frame skipping
+    
+    // Audio playback queue system (Priority 1: Fix jitter)
+    this.playbackQueue = []; // Queue of audio chunks to play
+    this.isPlayingQueue = false; // Flag to prevent concurrent queue processing
+    this.shouldAcceptNewChunks = true; // Flag to stop accepting new chunks after response is done
+  }
+
+  /**
+   * Strip comments (everything after #) from URL to prevent invalid URL errors
+   * @param {string} url - URL that may contain comments
+   * @returns {string} URL with comments stripped
+   */
+  stripUrlComments(url) {
+    if (!url) return url;
+    if (url.includes('#')) {
+      const cleaned = url.split('#')[0].trim();
+      if (cleaned !== url) {
+        this.logger.debug("Stripped comment from URL", {
+          original: url,
+          cleaned: cleaned
+        });
+      }
+      return cleaned;
+    }
+    return url;
   }
 
   sendStatusUpdate(stage, message, metadata = {}) {
@@ -203,18 +236,36 @@ class BrowserBot {
      * IMPORTANT: This function is NOT async and does NOT return a promise.
      * It's completely fire-and-forget to avoid blocking the event loop.
      */
+    // Allow status updates to be globally disabled via config
+    if (this.config.shouldSendStatus === false) {
+      return;
+    }
+
     if (!this.config.sessionId) {
       this.logger.warn("Cannot send status update: sessionId not available");
       return;
     }
 
+    if (!this.config.apiBaseUrl) {
+      this.logger.warn("Cannot send status update: apiBaseUrl not configured", {
+        stage,
+        apiBaseUrl: this.config.apiBaseUrl,
+      });
+      return;
+    }
+
     // Fire and forget - use process.nextTick to ensure it runs after current execution
     // but don't await anything - completely non-blocking
-    // NOTE: Status updates go to the main backend (apiBaseUrl, default port 8000),
-    // NOT to the OpenAI Realtime proxy server (port 5001)
     process.nextTick(() => {
       try {
-        const apiUrl = new URL("/api/demo/status", this.config.apiBaseUrl);
+        if (!this.config.apiBaseUrl) {
+          return;
+        }
+        
+        // Strip comments (everything after #) from URL to prevent invalid URL errors
+        const apiBaseUrl = this.stripUrlComments(this.config.apiBaseUrl);
+        
+        const apiUrl = new URL("/api/demo/status", apiBaseUrl);
         const payload = JSON.stringify({
           sessionId: this.config.sessionId,
           stage: stage,
@@ -223,6 +274,12 @@ class BrowserBot {
         });
 
         const requestModule = apiUrl.protocol === "https:" ? https : http;
+
+        this.logger.debug("Sending status update", {
+          stage,
+          url: `${apiUrl.protocol}//${apiUrl.hostname}:${apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80)}${apiUrl.pathname}`,
+          sessionId: this.config.sessionId.substring(0, 8) + "...",
+        });
 
           const req = requestModule.request(
             {
@@ -246,7 +303,7 @@ class BrowserBot {
                     statusCode: res.statusCode,
                   });
                 } else {
-                this.logger.debug("Status update failed", {
+                this.logger.warn("Status update failed", {
                     stage,
                     statusCode: res.statusCode,
                   });
@@ -256,25 +313,32 @@ class BrowserBot {
           );
 
           req.on("error", (error) => {
-          // Silently ignore errors - status updates are non-critical
-          this.logger.debug("Status update error (ignored)", {
+          // Log errors at warn level so they're visible
+          this.logger.warn("Status update error", {
               stage,
               error: error.message,
+              code: error.code,
+              url: `${apiUrl.protocol}//${apiUrl.hostname}:${apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80)}${apiUrl.pathname}`,
             });
           });
 
           req.on("timeout", () => {
             req.destroy();
-          // Silently ignore timeouts
+          this.logger.warn("Status update timeout", {
+              stage,
+              url: `${apiUrl.protocol}//${apiUrl.hostname}:${apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80)}${apiUrl.pathname}`,
+            });
           });
 
           req.write(payload);
           req.end();
       } catch (error) {
-        // Silently ignore all errors - status updates are non-critical
-        this.logger.debug("Status update exception (ignored)", {
+        // Log exceptions at warn level so they're visible
+        this.logger.warn("Status update exception", {
           stage,
           error: error.message,
+          stack: error.stack,
+          apiBaseUrl: this.config.apiBaseUrl,
         });
       }
     });
@@ -472,24 +536,36 @@ class BrowserBot {
       { headless: this.config.headless }
     );
 
+    // Make browser instance unique per sessionId
+    // Use sessionId to create unique user agent and storage state paths
+    const sessionIdHash = this.config.sessionId.substring(0, 8); // Use first 8 chars for uniqueness
+    const uniqueUserAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 (Session: ${sessionIdHash})`;
+    
     const contextOptions = {
       viewport: { width: 1280, height: 720 },
       ignoreHTTPSErrors: true,
       locale: this.config.browserLocale,
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      userAgent: uniqueUserAgent,
     };
 
     this.logger.info("Checking for Google Meet auth state (before) " + this.config.platform);
     if (this.config.platform === "google_meet") {
       this.logger.info("Inside Google Meet auth state block (in)");
-      const authStatePath = path.resolve(__dirname, "google_auth_state.json");
+      // Use sessionId to create unique storage state path per browser instance
+      const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
       if (fs.existsSync(authStatePath)) {
         contextOptions.storageState = authStatePath;
-        this.logger.info("Using Google auth storageState", { authStatePath });
+        this.logger.info("Using Google auth storageState", { authStatePath, sessionId: this.config.sessionId });
+      } else {
+        // Fallback to default if session-specific doesn't exist
+        const defaultAuthStatePath = path.resolve(__dirname, "google_auth_state.json");
+        if (fs.existsSync(defaultAuthStatePath)) {
+          contextOptions.storageState = defaultAuthStatePath;
+          this.logger.info("Using default Google auth storageState", { authStatePath: defaultAuthStatePath });
+        }
       }
     }
-    this.logger.info("Finished Google Meet auth state check (after)");
+    this.logger.info("Finished Google Meet auth state check (after)", { sessionId: this.config.sessionId });
 
     this.context = await this.browser.newContext(contextOptions);
 
@@ -513,9 +589,9 @@ class BrowserBot {
 
     this.page = await this.context.newPage();
     
-    // Set realistic User-Agent header for better compatibility
+    // Set realistic User-Agent header for better compatibility (unique per sessionId)
     await this.page.setExtraHTTPHeaders({
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": uniqueUserAgent,
     });
 
     await this.page.addInitScript(() => {
@@ -908,6 +984,70 @@ class BrowserBot {
     }
   }
 
+  /**
+   * Fetch a fresh WebSocket token from the backend
+   * @returns {Promise<string>} WebSocket URL with token
+   */
+  async fetchWebSocketToken() {
+    if (!this.config.apiBaseUrl) {
+      throw new Error("API_BASE_URL is required to fetch WebSocket token");
+    }
+    
+    // Strip comments from URL to prevent invalid URL errors
+    const apiBaseUrl = this.stripUrlComments(this.config.apiBaseUrl);
+    
+    this.logger.info("Fetching WebSocket token from backend", { apiBaseUrl: apiBaseUrl });
+    try {
+      const tokenUrl = new URL("/api/realtime/token", apiBaseUrl);
+      const response = await new Promise((resolve, reject) => {
+        const requestModule = tokenUrl.protocol === "https:" ? https : http;
+        const req = requestModule.get(
+          {
+            hostname: tokenUrl.hostname,
+            port: tokenUrl.port || (tokenUrl.protocol === "https:" ? 443 : 80),
+            path: tokenUrl.pathname,
+          },
+          (res) => {
+            let data = "";
+            res.on("data", (chunk) => {
+              data += chunk;
+            });
+            res.on("end", () => {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  resolve(JSON.parse(data));
+                } catch (e) {
+                  reject(new Error(`Failed to parse token response: ${e.message}`));
+                }
+              } else {
+                reject(new Error(`Failed to get token: ${res.statusCode} ${res.statusMessage}`));
+              }
+            });
+          }
+        );
+        req.on("error", reject);
+        req.setTimeout(5000, () => {
+          req.destroy();
+          reject(new Error("Token request timeout"));
+        });
+      });
+      
+      const wsUrl = response.url;
+      this.logger.info("Token fetched successfully", { url: wsUrl.substring(0, 60) + "..." });
+      
+      // Update config with new token URL for future use
+      this.config.openaiRealtimeWsUrl = wsUrl;
+      
+      return wsUrl;
+    } catch (error) {
+      this.logger.error("Failed to fetch token from backend", { 
+        error: error.message,
+        apiBaseUrl: this.config.apiBaseUrl 
+      });
+      throw new Error(`Failed to get WebSocket token: ${error.message}`);
+    }
+  }
+
   async connectWebSocket() {
     
    
@@ -935,54 +1075,52 @@ class BrowserBot {
     );
 
     try {
-      // Get WebSocket URL from Python backend (port 8000)
-      const wsUrl = this.config.openaiRealtimeWsUrl;
+      let wsUrl = this.config.openaiRealtimeWsUrl;
+      
+      // If no WebSocket URL provided, fetch token from backend
       if (!wsUrl) {
-        throw new Error("OpenAI WebSocket URL not set. Check OPENAI_REALTIME_WS_URL environment variable is configured.");
+        if (!this.config.apiBaseUrl) {
+          throw new Error("OpenAI WebSocket URL not set. Check OPENAI_REALTIME_WS_URL environment variable is configured or API_BASE_URL is set to fetch token automatically.");
+        }
+        wsUrl = await this.fetchWebSocketToken();
       }
       
-      // Log which proxy we're using
-      if (wsUrl.includes(":8000")) {
-        this.logger.info("✅ Using Python backend proxy server (port 8000)");
-      } else if (wsUrl.includes(":5001")) {
-        this.logger.info("✅ Using local Node.js proxy server (port 5001)");
-      } else {
-        this.logger.info("✅ Using OpenAI Realtime API proxy", { url: wsUrl.substring(0, 50) + "..." });
+      if (!wsUrl) {
+        throw new Error("OpenAI WebSocket URL not set. Check OPENAI_REALTIME_WS_URL environment variable is configured or API_BASE_URL is set to fetch token automatically.");
       }
 
-      // Clean up the URL: trim whitespace and quotes, then ensure proper protocol
-      // Use host.docker.internal in Docker to connect to host machine
-      let finalWsUrl = String(wsUrl).trim();
-      
-      // Remove surrounding quotes if present
-      if ((finalWsUrl.startsWith("'") && finalWsUrl.endsWith("'")) || 
-          (finalWsUrl.startsWith('"') && finalWsUrl.endsWith('"'))) {
-        finalWsUrl = finalWsUrl.slice(1, -1);
+      // Protocol conversion: ensure WebSocket protocol (ws:// or wss://)
+      // Convert http/https to ws/wss if needed
+      if (wsUrl.startsWith("http://")) {
+        wsUrl = wsUrl.replace("http://", "ws://");
+        this.logger.debug("Converted http:// to ws://", { original: this.config.openaiRealtimeWsUrl, converted: wsUrl });
+      } else if (wsUrl.startsWith("https://")) {
+        wsUrl = wsUrl.replace("https://", "wss://");
+        this.logger.debug("Converted https:// to wss://", { original: this.config.openaiRealtimeWsUrl, converted: wsUrl });
+      } else if (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://")) {
+        // If no protocol specified, default to ws://
+        wsUrl = `ws://${wsUrl}`;
+        this.logger.debug("Added ws:// protocol", { original: this.config.openaiRealtimeWsUrl, converted: wsUrl });
       }
       
-      // Detect if running in Docker and use host.docker.internal to connect to host machine
-      // Otherwise use 127.0.0.1 for local connections
-      const isDocker = fs.existsSync('/.dockerenv') || fs.existsSync('/app/.dockerenv');
-      const hostReplacement = isDocker ? "host.docker.internal" : "127.0.0.1";
-      
-      // Replace localhost with appropriate host (do this before protocol check)
-      // This allows Docker containers to connect to services on the host machine
-      finalWsUrl = finalWsUrl.replace(/localhost/g, hostReplacement);
-      
-      // Ensure the URL uses ws/wss protocol
-      if (finalWsUrl.startsWith("http://")) {
-        finalWsUrl = finalWsUrl.replace("http://", "ws://");
-      } else if (finalWsUrl.startsWith("https://")) {
-        finalWsUrl = finalWsUrl.replace("https://", "wss://");
-      } else if (!finalWsUrl.startsWith("ws://") && !finalWsUrl.startsWith("wss://")) {
-        // If no protocol, assume ws://
-        finalWsUrl = `ws://${finalWsUrl}`;
+      // Fix invalid host addresses: 0.0.0.0 is a server binding address, not a client connection address
+      // Convert 0.0.0.0 to localhost for client connections
+      if (wsUrl.includes("0.0.0.0")) {
+        const originalUrl = wsUrl;
+        wsUrl = wsUrl.replace(/0\.0\.0\.0/g, "localhost");
+        this.logger.warn("Converted 0.0.0.0 to localhost in WebSocket URL (0.0.0.0 is not a valid client connection address)", {
+          original: originalUrl.substring(0, 80) + (originalUrl.length > 80 ? "..." : ""),
+          converted: wsUrl.substring(0, 80) + (wsUrl.length > 80 ? "..." : "")
+        });
       }
 
-      this.logger.info("Connecting to OpenAI Realtime API", { url: finalWsUrl.substring(0, 50) + "..." });
+      this.logger.info("Connecting to OpenAI Realtime API", { 
+        url: wsUrl.substring(0, 80) + (wsUrl.length > 80 ? "..." : ""),
+        readyState: "connecting"
+      });
 
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(finalWsUrl);
+        const ws = new WebSocket(wsUrl);
         let isConnected = false;
         let connectionResolved = false;
 
@@ -993,7 +1131,13 @@ class BrowserBot {
             "I Could not connect to the microphone. attepting to reconnect...",
             { platform: this.config.platform }
           );
-            this.logger.error("OpenAI WebSocket connection timeout");
+            this.logger.error("OpenAI WebSocket connection timeout", {
+              url: wsUrl.substring(0, 80) + (wsUrl.length > 80 ? "..." : ""),
+              readyState: ws.readyState,
+              readyStateText: ws.readyState === WebSocket.CONNECTING ? "CONNECTING" : 
+                             ws.readyState === WebSocket.CLOSED ? "CLOSED" : 
+                             ws.readyState === WebSocket.CLOSING ? "CLOSING" : "UNKNOWN"
+            });
           try {
             ws.close();
           } catch (e) {
@@ -1006,7 +1150,7 @@ class BrowserBot {
             if (!connectionResolved) {
               connectionResolved = true;
               this.scheduleReconnect();
-              reject(new Error("OpenAI WebSocket connection timeout after 15 seconds"));
+              reject(new Error(`OpenAI WebSocket connection timeout after 15 seconds. URL: ${wsUrl.substring(0, 80)}... ReadyState: ${ws.readyState}`));
             }
           }
         }, 15000);
@@ -1077,40 +1221,56 @@ class BrowserBot {
 
       ws.on("message", (data) => {
         try {
-            // OpenAI Realtime API sends JSON messages
-            // In Node.js 'ws' library, messages can come as Buffer or string
-            let messageStr;
+          // OpenAI Realtime API sends JSON messages
+          // In Node.js 'ws' library, messages can come as Buffer or string
+          let messageStr;
           if (typeof data === 'string') {
-              messageStr = data;
-            } else if (Buffer.isBuffer(data)) {
-              messageStr = data.toString('utf8');
-            } else if (data instanceof ArrayBuffer) {
-              messageStr = Buffer.from(data).toString('utf8');
-            } else {
-              this.logger.warn("⚠️ Received unknown message type from OpenAI", {
-                type: typeof data,
-                constructor: data?.constructor?.name,
-                length: data?.length,
-              });
-              return;
-            }
-            
-            const message = JSON.parse(messageStr);
-            this.handleOpenAIMessage(message);
-                } catch (error) {
-            this.logger.error("❌ Error parsing OpenAI message", {
-                    error: error.message,
-              dataType: typeof data,
-              dataLength: data?.length,
+            messageStr = data;
+          } else if (Buffer.isBuffer(data)) {
+            messageStr = data.toString('utf8');
+          } else if (data instanceof ArrayBuffer) {
+            messageStr = Buffer.from(data).toString('utf8');
+          } else {
+            this.logger.warn("⚠️ Received unknown message type from OpenAI", {
+              type: typeof data,
+              constructor: data?.constructor?.name,
             });
+            return;
           }
-        });
+          
+          const message = JSON.parse(messageStr);
+          this.handleOpenAIMessage(message);
+        } catch (e) {
+          this.logger.error("Failed to parse WebSocket message", { error: e.message });
+        }
+      });
 
         ws.on("error", (error) => {
           clearTimeout(connectionTimeout);
           if (!isConnected) {
+            // Provide helpful error messages for common connection errors
+            let errorMessage = error.message;
+            let helpfulHint = "";
+            
+            if (error.code === 'ECONNREFUSED') {
+              const urlObj = new URL(wsUrl);
+              helpfulHint = `\n💡 Hint: The backend server is not running or not accessible at ${urlObj.host}. Please ensure the backend is running on port ${urlObj.port || 8000}.`;
+              errorMessage = `Connection refused${helpfulHint}`;
+            } else if (error.code === 'ENOTFOUND') {
+              const urlObj = new URL(wsUrl);
+              helpfulHint = `\n💡 Hint: Cannot resolve hostname "${urlObj.hostname}". Check your network connection and DNS settings.`;
+              errorMessage = `Hostname not found${helpfulHint}`;
+            } else if (error.code === 'ETIMEDOUT') {
+              helpfulHint = `\n💡 Hint: Connection timed out. Check your network connection and firewall settings.`;
+              errorMessage = `Connection timeout${helpfulHint}`;
+            }
+            
             this.logger.error("OpenAI WebSocket connection error", {
-              error: error.message,
+              error: errorMessage,
+              errorCode: error.code,
+              errorStack: error.stack,
+              url: wsUrl.substring(0, 80) + (wsUrl.length > 80 ? "..." : ""),
+              readyState: ws.readyState,
               attempt: this.reconnectAttempts + 1,
             });
             this.openaiWs = null;
@@ -1120,27 +1280,87 @@ class BrowserBot {
             if (!connectionResolved) {
               connectionResolved = true;
               this.scheduleReconnect();
-              reject(new Error(`Failed to connect to OpenAI: ${error.message}`));
+              // Extract the actual remote host/port from the underlying socket
+              let host = "unknown";
+              let port = "unknown";
+              if (
+                ws &&
+                ws._socket &&
+                (ws._socket.remoteAddress || ws._socket.remotePort)
+              ) {
+                host = ws._socket.remoteAddress || "unknown";
+                port = ws._socket.remotePort || "unknown";
+              }
+              reject(new Error(
+                `Failed to connect to OpenAI: ${errorMessage} (Code: ${error.code || 'N/A'}, Host: ${host}, Port: ${port})`
+              ));
             }
           } else {
             // Error after connection - log but don't reject (close handler will handle reconnection)
             this.logger.warn("OpenAI WebSocket error after connection", {
               error: error.message,
+              errorCode: error.code,
             });
           }
         });
 
-        ws.on("close", (code, reason) => {
+        ws.on("close", async (code, reason) => {
           clearTimeout(connectionTimeout);
           
-          // Don't reconnect for certain close codes
-          const shouldReconnectOnClose = code !== 1008 && code !== 1003; // 1008 = policy violation, 1003 = invalid data
+          const reasonStr = reason?.toString() || "No reason provided";
+          this.logger.info("WebSocket closed", {
+            code,
+            reason: reasonStr,
+            wasConnected: isConnected,
+            url: wsUrl.substring(0, 80) + (wsUrl.length > 80 ? "..." : ""),
+          });
+          
+          // Handle 1008 (Unauthorized) - token might be invalid/expired
+          // Also check reason string in case code is different but reason indicates unauthorized
+          // Fetch a fresh token and retry
+          let tokenRefreshed = false;
+          const isUnauthorized = code === 1008 || (reasonStr && reasonStr.toLowerCase().includes("unauthorized"));
+          if (isUnauthorized && this.config.apiBaseUrl) {
+            this.logger.warn("Received unauthorized error (code: %d, reason: %s) - token may be invalid/expired. Fetching fresh token...", code, reasonStr);
+            try {
+              const newWsUrl = await this.fetchWebSocketToken();
+              this.logger.info("Fetched fresh token, will retry connection", {
+                newUrl: newWsUrl.substring(0, 60) + "..."
+              });
+              tokenRefreshed = true;
+            } catch (tokenError) {
+              this.logger.error("Failed to fetch fresh token after unauthorized error", {
+                error: tokenError.message
+              });
+            }
+          }
+          
+          // Determine if we should reconnect based on close code
+          // 1000 = normal closure (shouldn't reconnect)
+          // 1001 = going away (reconnect)
+          // 1002 = protocol error (don't reconnect)
+          // 1003 = unsupported data (don't reconnect)
+          // 1006 = abnormal closure (reconnect)
+          // 1008 = policy violation/unauthorized - special handling: fetch new token and reconnect if token was refreshed
+          // 1009 = message too big (don't reconnect)
+          // 1010 = extension error (don't reconnect)
+          // 1011 = internal error (reconnect)
+          // 1012 = service restart (reconnect)
+          // 1013 = try again later (reconnect)
+          // 1014 = bad gateway (reconnect)
+          // 1015 = TLS handshake failure (don't reconnect)
+          
+          // 1008 is now recoverable if we successfully fetched a new token
+          const nonRecoverableCodes = [1000, 1002, 1003, 1009, 1010, 1015];
+          // If we got 1008 and successfully refreshed the token, allow reconnection
+          const shouldReconnectOnClose = !nonRecoverableCodes.includes(code) || 
+                                         (code === 1008 && tokenRefreshed);
           
           if (this.openaiConnected) {
             // Log detailed disconnect info to diagnose timing issues
             const disconnectInfo = {
               code,
-              reason: reason?.toString(),
+              reason: reasonStr,
               willReconnect: shouldReconnectOnClose && this.shouldReconnect,
               audioFramesSent: this.audioInputFramesSent,
               audioBytesSent: this.audioBytesSent,
@@ -1284,6 +1504,8 @@ class BrowserBot {
           if (this.voiceState !== "speaking") {
             this.voiceState = "speaking";
             this.logger.info("🔊 AI speaking");
+            // Priority 1: Reset flag when new response starts
+            this.shouldAcceptNewChunks = true;
           }
           if (message.delta) {
             // Decode base64 audio and play to meeting
@@ -1295,12 +1517,19 @@ class BrowserBot {
         case "response.audio.done":
         case "response.output_audio.done":
           this.voiceState = "idle";
+          // Priority 1: Stop accepting new chunks, but let queue finish playing
+          // Don't clear queue - chunks might still be arriving or in queue
+          this.shouldAcceptNewChunks = false;
           // AI response completed - transcript will be logged separately
           break;
 
         case "response.interrupted":
           // OpenAI automatically interrupted because user started speaking
           this.voiceState = "recording";
+          // Priority 1: Clear playback queue when interrupted (user is speaking, stop AI)
+          this.playbackQueue = [];
+          this.isPlayingQueue = false;
+          this.shouldAcceptNewChunks = false;
           this.logger.info("⚠️  AI interrupted (user speaking)");
           break;
 
@@ -1320,9 +1549,38 @@ class BrowserBot {
 
         case "error":
           const errorMsg = message.error?.message || "An error occurred";
+          const errorCode = message.error?.code;
+          
+          // Handle UNAUTHORIZED error - token might be invalid/expired
+          if (errorCode === "UNAUTHORIZED" && this.config.apiBaseUrl) {
+            this.logger.warn("Received UNAUTHORIZED error - token may be invalid/expired. Fetching fresh token...");
+            // Close the current connection since token is invalid
+            if (this.openaiWs) {
+              try {
+                this.openaiWs.close();
+              } catch (e) {
+                // Ignore errors when closing
+              }
+            }
+            this.openaiConnected = false;
+            this.connectionState = "disconnected";
+            
+            // Fetch a fresh token and trigger reconnection
+            this.fetchWebSocketToken().catch((tokenError) => {
+              this.logger.error("Failed to fetch fresh token after UNAUTHORIZED error", {
+                error: tokenError.message
+              });
+            }).then(() => {
+              // Schedule reconnection with new token
+              if (this.shouldReconnect && !this.shouldStop) {
+                this.scheduleReconnect();
+              }
+            });
+          }
+          
           this.logger.error("❌ OpenAI error", {
             message: errorMsg,
-            code: message.error?.code,
+            code: errorCode,
             type: message.error?.type,
             param: message.error?.param,
           });
@@ -2119,9 +2377,6 @@ class BrowserBot {
     // Encode as base64
     const base64Audio = arrayBufferToBase64(pcm16.buffer);
 
-    const now = Date.now();
-    const timeSinceLastLog = now - this.lastAudioLogTime;
-
     // Check if OpenAI WebSocket is ready and connected
     const isWsReady = 
       this.openaiWs && 
@@ -2130,66 +2385,55 @@ class BrowserBot {
 
     if (isWsReady) {
       try {
-        // Track send timing to diagnose blocking issues
-        const sendStartTime = Date.now();
+        // Check for backpressure - adaptive throttling to match WebSocket drain rate
+        const bufferedAmount = this.openaiWs.bufferedAmount || 0;
+        const MAX_BUFFERED_AMOUNT = 512 * 1024; // 512KB - stop sending completely
+        const HIGH_THRESHOLD = 384 * 1024; // 384KB - drop 2 out of 3 frames (66% throttle)
+        const MEDIUM_THRESHOLD = 256 * 1024; // 256KB - drop every other frame (50% throttle)
+        const LOW_THRESHOLD = 128 * 1024; // 128KB - normal operation
+        
+        // Adaptive frame dropping based on buffer level
+        let shouldSkip = false;
+        
+        if (bufferedAmount > MAX_BUFFERED_AMOUNT) {
+          shouldSkip = true;
+        } else if (bufferedAmount > HIGH_THRESHOLD) {
+          this.audioFrameSkipCounter++;
+          if (this.audioFrameSkipCounter % 3 !== 0) {
+            shouldSkip = true;
+          }
+        } else if (bufferedAmount > MEDIUM_THRESHOLD) {
+          this.audioFrameSkipCounter++;
+          if (this.audioFrameSkipCounter % 2 !== 0) {
+            shouldSkip = true;
+          }
+        } else if (bufferedAmount > LOW_THRESHOLD) {
+          this.audioFrameSkipCounter++;
+          if (this.audioFrameSkipCounter % 3 === 0) {
+            shouldSkip = true;
+          }
+        } else {
+          this.audioFrameSkipCounter = 0;
+        }
+        
+        if (shouldSkip) {
+          return;
+        }
         
         // Send as JSON message to OpenAI Realtime API
         const message = {
           type: "input_audio_buffer.append",
           audio: base64Audio,
         };
+        
         this.openaiWs.send(JSON.stringify(message));
-        
-        const sendDuration = Date.now() - sendStartTime;
-        
-        this.audioBytesSent += pcm16.length * 2; // 2 bytes per Int16 sample
+        this.audioBytesSent += pcm16.length * 2;
         this.audioInputFramesSent++;
-        
-        // Log if send takes too long (might indicate blocking)
-        if (sendDuration > 100) {
-          this.logger.warn("⚠️ Slow WebSocket send detected", {
-            duration_ms: sendDuration,
-            frame: this.audioInputFramesSent,
-            audioSize_bytes: base64Audio.length,
-          });
-        }
-
-        // Periodic logging every 30 seconds (reduced frequency)
-        if (timeSinceLastLog >= 30000) {
-          const bytesPerSecond =
-            (this.audioBytesSent / timeSinceLastLog) * 1000;
-          this.logger.info("📤 Audio Input", {
-            frames: this.audioInputFramesSent,
-            rate: `${Math.round(bytesPerSecond / 1000)}KB/s`,
-            wsReadyState: this.openaiWs?.readyState,
-            connectionState: this.connectionState,
-          });
-          this.lastAudioLogTime = now;
-        }
       } catch (error) {
-        // WebSocket error - mark as disconnected but don't break flow
-        this.logger.warn("Failed to send audio to OpenAI, marking as disconnected", { 
-          error: error.message,
-          frame: this.audioInputFramesSent,
-          wsReadyState: this.openaiWs?.readyState,
-        });
         this.openaiConnected = false;
         this.openaiWs = null;
         this.connectionState = "disconnected";
-        // Schedule reconnection (non-blocking, with backoff)
         this.scheduleReconnect();
-      }
-    } else {
-      // WebSocket not ready - log occasionally but don't spam
-      if (timeSinceLastLog >= 5000 || this.audioFrameCount <= 10) {
-        this.logger.debug("Audio frames received but OpenAI WebSocket not ready", {
-          frames: this.audioFrameCount,
-          wsReady: this.openaiWs?.readyState === WebSocket.OPEN,
-          wsConnected: this.openaiConnected,
-          wsState: this.openaiWs?.readyState,
-          connectionState: this.connectionState,
-        });
-        this.lastAudioLogTime = now;
       }
     }
   }
@@ -2209,9 +2453,6 @@ class BrowserBot {
     }
 
     this.audioOutputChunksReceived++;
-    const now = Date.now();
-    const timeSinceLastLog = now - this.lastSpeechLogTime;
-
 
     // Resample from 24kHz (OpenAI) to 48kHz (meeting) using proper interpolation
     const samples48k = resampleAudio(
@@ -2223,29 +2464,70 @@ class BrowserBot {
     // Convert Float32Array to regular array for page.evaluate
     const samples48kArray = Array.from(samples48k);
 
-    // Periodic logging every 30 seconds (reduced frequency)
-    if (timeSinceLastLog >= 30000) {
-      this.logger.info("📥 Audio Output", {
-        chunks: this.audioOutputChunksReceived,
-      });
-      this.lastSpeechLogTime = now;
-    }
-
     // Only attempt to play audio if we have a valid connection and page
     if (!this.openaiConnected || !this.page || this.page.isClosed()) {
       return; // Silently skip if connection/page is invalid
     }
     
-    this.playAudioToMeeting(samples48kArray).catch((error) => {
-      // Only log if it's not a page-closed error (those are expected during cleanup)
-      if (!error.message.includes("closed") && !error.message.includes("Target page")) {
-      this.logger.error("❌ Failed to play audio to meeting", {
-        error: error.message,
-          samples: samples48kArray.length,
-      });
+    // Priority 1: Only add to queue if we should accept new chunks
+    // This prevents adding chunks after response.audio.done arrives
+    if (!this.shouldAcceptNewChunks) {
+      return; // Silently skip - response is done, let queue finish
+    }
+    
+    // Priority 1: Add to playback queue instead of playing immediately
+    this.playbackQueue.push(samples48kArray);
+    this.playAudioQueue();
+  }
+
+  /**
+   * Priority 1: Playback queue system - processes audio chunks sequentially
+   * Similar to voice agent's playAudioQueue, ensures smooth playback
+   */
+  async playAudioQueue() {
+    // Prevent concurrent queue processing
+    if (this.isPlayingQueue || this.playbackQueue.length === 0) {
+      return;
+    }
+
+    // Early return if page is closed or connection is invalid
+    if (!this.page || this.page.isClosed() || !this.openaiConnected) {
+      this.playbackQueue = []; // Clear queue if connection is invalid
+      return;
+    }
+
+    this.isPlayingQueue = true;
+
+    try {
+      // Process queue sequentially - one chunk at a time
+      // Continue until queue is empty, even if shouldAcceptNewChunks is false
+      // This ensures all queued chunks are played even after response.audio.done
+      while (this.playbackQueue.length > 0 && this.isPlayingQueue) {
+        const audioData = this.playbackQueue.shift();
+        if (!audioData) continue;
+
+        try {
+          // Inject chunk and wait for it to complete before processing next
+          await this.playAudioToMeeting(audioData);
+        } catch (error) {
+          // Only log if it's not a page-closed error (expected during cleanup)
+          if (!error.message.includes("closed") && !error.message.includes("Target page")) {
+            this.logger.error("❌ Failed to play audio chunk from queue", {
+              error: error.message,
+              samples: audioData.length,
+            });
+          }
+          // Continue with next chunk even if this one failed
+        }
       }
-      // Don't throw - prevent error loops
-    });
+      
+      // Priority 1: After queue is empty, reset flag for next response
+      if (this.playbackQueue.length === 0) {
+        this.shouldAcceptNewChunks = true;
+      }
+    } finally {
+      this.isPlayingQueue = false;
+    }
   }
 
   async playAudioToMeeting(audioData) {
@@ -2444,9 +2726,11 @@ class BrowserBot {
   async saveAuthState() {
     if (this.config.platform === "google_meet") {
       try {
-        const authStatePath = path.resolve(__dirname, "google_auth_state.json");
+        // Save auth state with sessionId to make it unique per browser instance
+        const sessionIdHash = this.config.sessionId.substring(0, 8);
+        const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
         await this.context.storageState({ path: authStatePath });
-        this.logger.info("Auth state saved", { path: authStatePath });
+        this.logger.info("Auth state saved", { path: authStatePath, sessionId: this.config.sessionId });
       } catch (error) {
         this.logger.warn("Failed to save auth state", { error: error.message });
       }
@@ -2521,6 +2805,11 @@ class BrowserBot {
     this.connectionState = "disconnected";
     this.voiceState = "idle";
     
+    // Priority 1: Clear playback queue on cleanup
+    this.playbackQueue = [];
+    this.isPlayingQueue = false;
+    this.shouldAcceptNewChunks = true;
+    
     // Legacy gateway cleanup (for backward compatibility)
     if (this.gateway) {
       try {
@@ -2565,17 +2854,141 @@ class BrowserBot {
   }
 }
 
+async function startPulseAudio() {
+  // Only start pulseaudio in Docker environment
+  const isDocker = fs.existsSync('/.dockerenv') || fs.existsSync('/app/.dockerenv');
+  if (!isDocker) {
+    return; // Not in Docker, skip pulseaudio startup
+  }
+
+  return new Promise((resolve) => {
+    console.log("[INFO] Starting pulseaudio daemon...");
+    
+    const pulseaudio = spawn("pulseaudio", ["--start", "--exit-idle-time=-1"], {
+      stdio: "ignore", // Suppress output
+      detached: true, // Don't wait for process to exit
+    });
+
+    // Handle errors gracefully - if pulseaudio is already running, that's fine
+    pulseaudio.on("error", (error) => {
+      if (error.code === "ENOENT") {
+        console.warn("[WARN] pulseaudio not found in PATH, skipping startup");
+      } else {
+        console.warn(`[WARN] Failed to start pulseaudio: ${error.message}`);
+      }
+      // Even if pulseaudio fails to start, try to set up virtual sink (might already be running)
+      setupVirtualSink().then(() => resolve());
+    });
+
+    // If spawn succeeds, pulseaudio is starting
+    pulseaudio.on("spawn", () => {
+      console.log("[INFO] ✅ Pulseaudio daemon started");
+      // Don't wait for exit - pulseaudio runs as a daemon
+      pulseaudio.unref(); // Allow Node.js to exit independently
+      
+      // Wait a moment for pulseaudio to fully initialize, then set up virtual sink
+      setTimeout(() => {
+        setupVirtualSink().then(() => resolve());
+      }, 500);
+    });
+
+    // If process exits immediately, it might already be running (which is fine)
+    pulseaudio.on("exit", (code, signal) => {
+      if (code === 0 || code === null) {
+        console.log("[INFO] ✅ Pulseaudio process completed (may already be running)");
+      } else {
+        console.warn(`[WARN] Pulseaudio exited with code ${code}, signal ${signal}`);
+      }
+      // Try to set up virtual sink anyway (pulseaudio might already be running)
+      setupVirtualSink().then(() => resolve());
+    });
+
+    // Timeout after 2 seconds - if it takes longer, assume it's starting
+    setTimeout(() => {
+      setupVirtualSink().then(() => resolve());
+    }, 2000);
+  });
+}
+
+async function setupVirtualSink() {
+  return new Promise((resolve) => {
+    console.log("[INFO] Setting up virtual audio sink for low-latency injection...");
+    
+    // Load null-sink module to create virtual audio sink
+    const pactl = spawn("pactl", [
+      "load-module",
+      "module-null-sink",
+      "sink_name=virtual_sink",
+      "sink_properties=device.description=VirtualSink"
+    ], {
+      stdio: "pipe", // Capture output to check if module already loaded
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    pactl.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    pactl.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    pactl.on("error", (error) => {
+      if (error.code === "ENOENT") {
+        console.warn("[WARN] pactl not found in PATH, skipping virtual sink setup");
+      } else {
+        console.warn(`[WARN] Failed to run pactl: ${error.message}`);
+      }
+      resolve(); // Continue anyway
+    });
+
+    pactl.on("exit", (code) => {
+      if (code === 0) {
+        const moduleId = stdout.trim();
+        if (moduleId && !isNaN(parseInt(moduleId))) {
+          console.log(`[INFO] ✅ Virtual audio sink created (module ID: ${moduleId})`);
+          console.log("[INFO] ✅ Virtual sink monitor available at: virtual_sink.monitor");
+        } else {
+          console.log("[INFO] ✅ Virtual audio sink setup completed");
+        }
+      } else {
+        // Exit code 1 usually means module already loaded, which is fine
+        if (stderr.includes("already loaded") || stderr.includes("exists")) {
+          console.log("[INFO] ✅ Virtual audio sink already exists (reusing)");
+        } else {
+          console.warn(`[WARN] Virtual sink setup exited with code ${code}: ${stderr.trim()}`);
+        }
+      }
+      resolve();
+    });
+
+    // Timeout after 3 seconds
+    setTimeout(() => {
+      resolve();
+    }, 3000);
+  });
+}
+
 async function main() {
-  // Bot uses Python backend (port 8000) for OpenAI Realtime API proxy
-  // OPENAI_REALTIME_WS_URL is provided by the backend via environment variable
+  // Start pulseaudio daemon for WebRTC audio support (Docker only)
+  await startPulseAudio();
+
+  // Bot uses Python backend for OpenAI Realtime API proxy
+  // OPENAI_REALTIME_WS_URL can be provided directly, or the bot will fetch it from API_BASE_URL
   
-  if (!config.openaiRealtimeWsUrl) {
-    console.error("[ERROR] OPENAI_REALTIME_WS_URL is required. Bot cannot connect to OpenAI without it.");
-    throw new Error("OPENAI_REALTIME_WS_URL environment variable is required");
+  if (!config.openaiRealtimeWsUrl && !config.apiBaseUrl) {
+    console.error("[ERROR] Either OPENAI_REALTIME_WS_URL or API_BASE_URL is required.");
+    console.error("[ERROR] If API_BASE_URL is set, the bot will automatically fetch a token from /api/realtime/token");
+    throw new Error("Either OPENAI_REALTIME_WS_URL or API_BASE_URL environment variable is required");
   }
   
-  console.log(`[INFO] ✅ Using Python backend proxy for OpenAI Realtime API`);
-  console.log(`[INFO] ✅ OpenAI WebSocket URL: ${config.openaiRealtimeWsUrl.substring(0, 60)}...`);
+  if (config.openaiRealtimeWsUrl) {
+    console.log(`[INFO] ✅ Using provided OpenAI WebSocket URL: ${config.openaiRealtimeWsUrl.substring(0, 60)}...`);
+  } else if (config.apiBaseUrl) {
+    console.log(`[INFO] ✅ API_BASE_URL is set - bot will fetch token from ${config.apiBaseUrl}/api/realtime/token`);
+  }
 
   const bot = new BrowserBot(config);
   await bot.start();
@@ -2591,4 +3004,5 @@ if (require.main === module) {
 module.exports = {
   main,
   config,
+  BrowserBot, // Export BrowserBot class for direct instantiation
 };
