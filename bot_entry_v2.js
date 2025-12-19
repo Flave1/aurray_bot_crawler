@@ -2453,6 +2453,18 @@ class BrowserBot {
     }
 
     this.audioOutputChunksReceived++;
+    
+    // Log first few chunks to confirm they're being received
+    if (this.audioOutputChunksReceived <= 3) {
+      this.logger.info("📥 Audio chunk received from OpenAI", {
+        chunkNumber: this.audioOutputChunksReceived,
+        bufferSize: buf.length,
+        samples24k: samples24k.length,
+        openaiConnected: this.openaiConnected,
+        hasPage: !!this.page,
+        pageClosed: this.page?.isClosed()
+      });
+    }
 
     // Resample from 24kHz (OpenAI) to 48kHz (meeting) using proper interpolation
     const samples48k = resampleAudio(
@@ -2478,14 +2490,14 @@ class BrowserBot {
     // Priority 1: Add to playback queue instead of playing immediately
     this.playbackQueue.push(samples48kArray);
     
-    // Log queue status periodically
-    if (this.audioOutputChunksReceived % 10 === 0 || this.audioOutputChunksReceived < 5) {
-      this.logger.debug("📦 Audio chunk queued", {
+    // Log queue status - always log first 5, then every 10th
+    if (this.audioOutputChunksReceived <= 5 || this.audioOutputChunksReceived % 10 === 0) {
+      this.logger.info("📦 Audio chunk queued for playback", {
         chunkNumber: this.audioOutputChunksReceived,
         queueLength: this.playbackQueue.length,
         isPlayingQueue: this.isPlayingQueue,
         shouldAcceptNewChunks: this.shouldAcceptNewChunks,
-        samplesCount: samples48kArray.length
+        samples48kCount: samples48kArray.length
       });
     }
     
@@ -2499,13 +2511,15 @@ class BrowserBot {
   async playAudioQueue() {
     // Prevent concurrent queue processing
     if (this.isPlayingQueue || this.playbackQueue.length === 0) {
-      if (this.playbackQueue.length > 0 && !this.isPlayingQueue) {
-        this.logger.debug("📦 playAudioQueue: Already processing or queue empty", {
-          isPlayingQueue: this.isPlayingQueue,
-          queueLength: this.playbackQueue.length
-        });
-      }
       return;
+    }
+    
+    // Log when queue processing starts (first few times)
+    if (this.audioOutputChunksReceived <= 5) {
+      this.logger.info("▶️ Starting audio queue processing", {
+        queueLength: this.playbackQueue.length,
+        isPlayingQueue: this.isPlayingQueue
+      });
     }
 
     // Early return if page is closed or connection is invalid
@@ -2625,18 +2639,20 @@ class BrowserBot {
         return status;
       }, audioData);
       
-      // Log injection details (only every 10th chunk to avoid spam)
-      if (this.audioOutputChunksReceived % 10 === 0 || this.audioOutputChunksReceived < 5) {
-        this.logger.info("🔊 Audio injection status", {
+      // Log injection details - always log first 5, then every 10th
+      if (this.audioOutputChunksReceived <= 5 || this.audioOutputChunksReceived % 10 === 0) {
+        this.logger.info("🔊 Audio injection attempt", {
           chunkNumber: this.audioOutputChunksReceived,
           samplesInjected: result.samplesInjected,
           injectionSuccess: result.injectionSuccess,
           audioContextState: result.audioContextState,
           hasVirtualStream: result.hasVirtualStream,
+          hasInjectFunction: result.hasInjectFunction,
           trackState: statusBefore.trackState,
           trackEnabled: statusBefore.trackEnabled,
           bufferLengthBefore: result.bufferLengthBefore,
-          bufferLengthAfter: result.bufferLengthAfter
+          bufferLengthAfter: result.bufferLengthAfter,
+          streamId: statusBefore.streamId
         });
       }
       
