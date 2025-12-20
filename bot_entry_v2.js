@@ -569,6 +569,9 @@ class BrowserBot {
 
     this.context = await this.browser.newContext(contextOptions);
 
+    // Save auth state immediately after browser context is created
+    await this.saveAuthState();
+
     const origin = getPlatformPermissionsOrigin(
       this.config.platform,
       this.config.meetingUrl
