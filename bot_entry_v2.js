@@ -897,6 +897,7 @@ class BrowserBot {
       instructions: this.config.instructions ? this.config.instructions.substring(0, 100) + '...' : undefined,
     });
 
+    await this.saveAuthState();
     if (this.config.platform === "google_meet") {
       const currentUrl = this.page.url();
       if (
@@ -920,7 +921,6 @@ class BrowserBot {
             this.logger.warn("Login timeout - please check browser");
           });
 
-        await this.saveAuthState();
       }
     }
   }
