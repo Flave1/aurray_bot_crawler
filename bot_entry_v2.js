@@ -875,6 +875,27 @@ class BrowserBot {
     }
 
     this.logger.info("Navigation complete", { url: this.page.url() });
+    
+    // Log all config variables after navigation
+    this.logger.info("Bot configuration after navigation", {
+      meetingUrl: this.config.meetingUrl,
+      botName: this.config.botName,
+      platform: this.config.platform,
+      headless: this.config.headless,
+      shouldSendStatus: this.config.shouldSendStatus,
+      browserEngine: this.config.browserEngine,
+      browserLocale: this.config.browserLocale,
+      browserArgs: this.config.browserArgs,
+      navigationTimeoutMs: this.config.navigationTimeoutMs,
+      logLevel: this.config.logLevel,
+      sessionId: this.config.sessionId,
+      apiBaseUrl: this.config.apiBaseUrl,
+      isOrganizer: this.config.isOrganizer,
+      voice: this.config.voice,
+      hasOpenaiApiKey: !!this.config.openaiApiKey,
+      hasOpenaiRealtimeWsUrl: !!this.config.openaiRealtimeWsUrl,
+      instructions: this.config.instructions ? this.config.instructions.substring(0, 100) + '...' : undefined,
+    });
 
     if (this.config.platform === "google_meet") {
       const currentUrl = this.page.url();
