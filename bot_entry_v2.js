@@ -2752,17 +2752,51 @@ class BrowserBot {
   }
 
   async saveAuthState() {
+    this.logger.info("saveAuthState called", {
+      platform: this.config.platform,
+      hasContext: !!this.context,
+      sessionId: this.config.sessionId,
+      contextState: this.context?.browser()?.isConnected() ? "connected" : "disconnected"
+    });
+    
     if (this.config.platform === "google_meet") {
+      this.logger.info("Platform is google_meet, proceeding with auth state save");
       try {
         // Save auth state with sessionId to make it unique per browser instance
         const sessionIdHash = this.config.sessionId.substring(0, 8);
         const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
+        
+        this.logger.info("Attempting to save auth state", {
+          sessionIdHash,
+          authStatePath,
+          __dirname,
+          hasContext: !!this.context,
+          contextType: this.context ? typeof this.context : "undefined"
+        });
+        
         await this.context.storageState({ path: authStatePath });
-        this.logger.info("Auth state saved", { path: authStatePath, sessionId: this.config.sessionId });
+        
+        this.logger.info("Auth state saved successfully", { 
+          path: authStatePath, 
+          sessionId: this.config.sessionId,
+          fileExists: fs.existsSync(authStatePath)
+        });
       } catch (error) {
-        this.logger.warn("Failed to save auth state", { error: error.message });
+        this.logger.warn("Failed to save auth state", { 
+          error: error.message,
+          errorStack: error.stack,
+          errorName: error.name,
+          hasContext: !!this.context,
+          contextState: this.context ? "exists" : "missing"
+        });
       }
+    } else {
+      this.logger.info("Platform is not google_meet, skipping auth state save", {
+        platform: this.config.platform
+      });
     }
+    
+    this.logger.info("saveAuthState completed");
   }
 
   async cleanup() {
