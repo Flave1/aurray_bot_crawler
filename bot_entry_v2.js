@@ -776,7 +776,9 @@ class BrowserBot {
           trackCount: virtualStream.getAudioTracks().length,
           trackIds: virtualStream.getAudioTracks().map(t => t.id),
           trackStates: virtualStream.getAudioTracks().map(t => t.readyState),
-          trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled)
+          trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled),
+          trackMuted: virtualStream.getAudioTracks().map(t => t.muted),
+          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
         };
         console.log("[AURRAY] Virtual stream available, returning it", {
           ...contextInfo,
@@ -2723,19 +2725,52 @@ class BrowserBot {
       const TONE_FREQ = 20;
       const TONE_AMPLITUDE = 0.0001;
 
+      let totalSamplesRead = 0;
+      let totalSamplesFromBuffer = 0;
+      let totalSamplesFromTone = 0;
+      let lastLogTime = 0;
+      let processCallCount = 0;
+      
       processor.onaudioprocess = (event) => {
+        processCallCount++;
         const output = event.outputBuffer.getChannelData(0);
         const len = output.length;
         const sampleRate = event.outputBuffer.sampleRate;
+        let samplesFromBuffer = 0;
+        let samplesFromTone = 0;
 
         for (let i = 0; i < len; i++) {
           if (readIndex < buffer.length) {
             output[i] = buffer[readIndex++];
+            samplesFromBuffer++;
+            totalSamplesFromBuffer++;
           } else {
             tonePhase += (TONE_FREQ / sampleRate) * 2 * Math.PI;
             if (tonePhase > 2 * Math.PI) tonePhase -= 2 * Math.PI;
             output[i] = Math.sin(tonePhase) * TONE_AMPLITUDE;
+            samplesFromTone++;
+            totalSamplesFromTone++;
           }
+        }
+        
+        totalSamplesRead += len;
+        
+        // Log every 5 seconds to see if processor is running
+        const now = Date.now();
+        if (now - lastLogTime > 5000) {
+          console.log("[AURRAY] ScriptProcessorNode reading audio", {
+            processCallCount: processCallCount,
+            bufferLength: buffer.length,
+            readIndex: readIndex,
+            samplesFromBuffer: samplesFromBuffer,
+            samplesFromTone: samplesFromTone,
+            totalSamplesRead: totalSamplesRead,
+            totalSamplesFromBuffer: totalSamplesFromBuffer,
+            totalSamplesFromTone: totalSamplesFromTone,
+            totalSamplesInjected: totalSamplesInjected,
+            audioContextState: ctx.state
+          });
+          lastLogTime = now;
         }
 
         if (readIndex > 48000 * 5) {
