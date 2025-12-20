@@ -1,0 +1,42 @@
+# Fly.io app configuration for browser bot
+# See https://fly.io/docs/reference/configuration/ for more information
+
+app = "aurray-bot"  # Change this to your app name
+primary_region = "iad"  # Washington, D.C. - change to your preferred region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[processes]
+  app = "node server.js"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 2048
+
+# Volume for persistent storage (if needed for browser state)
+# Uncomment if you need persistent storage
+# [[mounts]]
+#   source = "bot_storage"
+#   destination = "/app/storage"
+
