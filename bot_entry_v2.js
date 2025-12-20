@@ -776,9 +776,7 @@ class BrowserBot {
           trackCount: virtualStream.getAudioTracks().length,
           trackIds: virtualStream.getAudioTracks().map(t => t.id),
           trackStates: virtualStream.getAudioTracks().map(t => t.readyState),
-          trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled),
-          trackMuted: virtualStream.getAudioTracks().map(t => t.muted),
-          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+          trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled)
         };
         console.log("[AURRAY] Virtual stream available, returning it", {
           ...contextInfo,
@@ -2455,18 +2453,6 @@ class BrowserBot {
     }
 
     this.audioOutputChunksReceived++;
-    
-    // Log first few chunks to confirm they're being received
-    if (this.audioOutputChunksReceived <= 3) {
-      this.logger.info("📥 Audio chunk received from OpenAI", {
-        chunkNumber: this.audioOutputChunksReceived,
-        bufferSize: buf.length,
-        samples24k: samples24k.length,
-        openaiConnected: this.openaiConnected,
-        hasPage: !!this.page,
-        pageClosed: this.page?.isClosed()
-      });
-    }
 
     // Resample from 24kHz (OpenAI) to 48kHz (meeting) using proper interpolation
     const samples48k = resampleAudio(
@@ -2491,18 +2477,6 @@ class BrowserBot {
     
     // Priority 1: Add to playback queue instead of playing immediately
     this.playbackQueue.push(samples48kArray);
-    
-    // Log queue status - always log first 5, then every 10th
-    if (this.audioOutputChunksReceived <= 5 || this.audioOutputChunksReceived % 10 === 0) {
-      this.logger.info("📦 Audio chunk queued for playback", {
-        chunkNumber: this.audioOutputChunksReceived,
-        queueLength: this.playbackQueue.length,
-        isPlayingQueue: this.isPlayingQueue,
-        shouldAcceptNewChunks: this.shouldAcceptNewChunks,
-        samples48kCount: samples48kArray.length
-      });
-    }
-    
     this.playAudioQueue();
   }
 
@@ -2514,14 +2488,6 @@ class BrowserBot {
     // Prevent concurrent queue processing
     if (this.isPlayingQueue || this.playbackQueue.length === 0) {
       return;
-    }
-    
-    // Log when queue processing starts (first few times)
-    if (this.audioOutputChunksReceived <= 5) {
-      this.logger.info("▶️ Starting audio queue processing", {
-        queueLength: this.playbackQueue.length,
-        isPlayingQueue: this.isPlayingQueue
-      });
     }
 
     // Early return if page is closed or connection is invalid
@@ -2537,8 +2503,6 @@ class BrowserBot {
     }
 
     this.isPlayingQueue = true;
-    const queueLengthAtStart = this.playbackQueue.length;
-    let chunksProcessed = 0;
 
     try {
       // Process queue sequentially - one chunk at a time
@@ -2548,7 +2512,6 @@ class BrowserBot {
         const audioData = this.playbackQueue.shift();
         if (!audioData) continue;
 
-        chunksProcessed++;
         try {
           // Inject chunk and wait for it to complete before processing next
           await this.playAudioToMeeting(audioData);
@@ -2557,23 +2520,11 @@ class BrowserBot {
           if (!error.message.includes("closed") && !error.message.includes("Target page")) {
             this.logger.error("❌ Failed to play audio chunk from queue", {
               error: error.message,
-              errorStack: error.stack,
               samples: audioData.length,
-              chunkNumber: chunksProcessed,
-              queueLength: this.playbackQueue.length
             });
           }
           // Continue with next chunk even if this one failed
         }
-      }
-      
-      // Log queue completion
-      if (queueLengthAtStart > 0) {
-        this.logger.debug("✅ playAudioQueue: Completed", {
-          chunksProcessed: chunksProcessed,
-          queueLengthAtStart: queueLengthAtStart,
-          queueLengthAfter: this.playbackQueue.length
-        });
       }
       
       // Priority 1: After queue is empty, reset flag for next response
@@ -2588,92 +2539,31 @@ class BrowserBot {
   async playAudioToMeeting(audioData) {
     // Early return if page is closed or connection is invalid
     if (!this.page || this.page.isClosed() || !this.openaiConnected) {
-      this.logger.debug("⚠️ playAudioToMeeting: Skipping - page closed or not connected", {
-        hasPage: !!this.page,
-        pageClosed: this.page?.isClosed(),
-        openaiConnected: this.openaiConnected
-      });
       return;
     }
     
     try {
-      // Get virtual mic status before injection for debugging
-      const statusBefore = await this.page.evaluate(() => {
-        return {
-          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
-          hasVirtualStream: !!window.aurrayVirtualMicStream,
-          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A',
-          streamId: window.aurrayVirtualMicStream?.id || 'N/A',
-          trackState: window.aurrayVirtualMicStream?.getAudioTracks()[0]?.readyState || 'N/A',
-          trackEnabled: window.aurrayVirtualMicStream?.getAudioTracks()[0]?.enabled || false
-        };
-      }).catch(() => ({ error: 'Could not evaluate status' }));
-      
-      const result = await this.page.evaluate((samples) => {
-        const status = {
-          hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
-          hasVirtualStream: !!window.aurrayVirtualMicStream,
-          audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A',
-          bufferLengthBefore: 0,
-          bufferLengthAfter: 0,
-          samplesInjected: samples.length,
-          injectionSuccess: false
-        };
-        
+      await this.page.evaluate((samples) => {
         if (typeof window.aurrayInjectAudio48k === "function") {
-          // Get buffer length before injection (if accessible)
-          if (window.__aurrayBufferLength) {
-            status.bufferLengthBefore = window.__aurrayBufferLength();
-          }
-          
-          // Inject audio
           window.aurrayInjectAudio48k(samples);
-          status.injectionSuccess = true;
-          
-          // Get buffer length after injection (if accessible)
-          if (window.__aurrayBufferLength) {
-            status.bufferLengthAfter = window.__aurrayBufferLength();
-          }
         } else {
           throw new Error("aurrayInjectAudio48k not found");
         }
-        
-        return status;
       }, audioData);
-      
-      // Log injection details - always log first 5, then every 10th
-      if (this.audioOutputChunksReceived <= 5 || this.audioOutputChunksReceived % 10 === 0) {
-        this.logger.info("🔊 Audio injection attempt", {
-          chunkNumber: this.audioOutputChunksReceived,
-          samplesInjected: result.samplesInjected,
-          injectionSuccess: result.injectionSuccess,
-          audioContextState: result.audioContextState,
-          hasVirtualStream: result.hasVirtualStream,
-          hasInjectFunction: result.hasInjectFunction,
-          trackState: statusBefore.trackState,
-          trackEnabled: statusBefore.trackEnabled,
-          bufferLengthBefore: result.bufferLengthBefore,
-          bufferLengthAfter: result.bufferLengthAfter,
-          streamId: statusBefore.streamId
-        });
-      }
-      
     } catch (error) {
       // Check if it's a page-closed error (expected during cleanup)
       if (error.message.includes("closed") || error.message.includes("Target page")) {
-        this.logger.debug("⚠️ playAudioToMeeting: Page closed during injection (expected during cleanup)");
         return; // Silently return, don't log or throw
       }
       
-      // For other errors, log with full details
-      this.logger.error("❌ Error playing audio to meeting", {
-        error: error.message,
-        errorStack: error.stack,
-        samples: audioData.length,
-        hasPage: !!this.page,
-        pageClosed: this.page?.isClosed(),
-        openaiConnected: this.openaiConnected
-      });
+      // Log error to help diagnose - only log first few to avoid spam
+      if (this.audioOutputChunksReceived <= 5 || this.audioOutputChunksReceived % 50 === 0) {
+        this.logger.error("❌ Error playing audio to meeting", {
+          error: error.message,
+          samples: audioData.length,
+          chunkNumber: this.audioOutputChunksReceived
+        });
+      }
       // Don't throw - let the error handler in handleAudioChunk deal with it
     }
   }
@@ -2725,52 +2615,19 @@ class BrowserBot {
       const TONE_FREQ = 20;
       const TONE_AMPLITUDE = 0.0001;
 
-      let totalSamplesRead = 0;
-      let totalSamplesFromBuffer = 0;
-      let totalSamplesFromTone = 0;
-      let lastLogTime = 0;
-      let processCallCount = 0;
-      
       processor.onaudioprocess = (event) => {
-        processCallCount++;
         const output = event.outputBuffer.getChannelData(0);
         const len = output.length;
         const sampleRate = event.outputBuffer.sampleRate;
-        let samplesFromBuffer = 0;
-        let samplesFromTone = 0;
 
         for (let i = 0; i < len; i++) {
           if (readIndex < buffer.length) {
             output[i] = buffer[readIndex++];
-            samplesFromBuffer++;
-            totalSamplesFromBuffer++;
           } else {
             tonePhase += (TONE_FREQ / sampleRate) * 2 * Math.PI;
             if (tonePhase > 2 * Math.PI) tonePhase -= 2 * Math.PI;
             output[i] = Math.sin(tonePhase) * TONE_AMPLITUDE;
-            samplesFromTone++;
-            totalSamplesFromTone++;
           }
-        }
-        
-        totalSamplesRead += len;
-        
-        // Log every 5 seconds to see if processor is running
-        const now = Date.now();
-        if (now - lastLogTime > 5000) {
-          console.log("[AURRAY] ScriptProcessorNode reading audio", {
-            processCallCount: processCallCount,
-            bufferLength: buffer.length,
-            readIndex: readIndex,
-            samplesFromBuffer: samplesFromBuffer,
-            samplesFromTone: samplesFromTone,
-            totalSamplesRead: totalSamplesRead,
-            totalSamplesFromBuffer: totalSamplesFromBuffer,
-            totalSamplesFromTone: totalSamplesFromTone,
-            totalSamplesInjected: totalSamplesInjected,
-            audioContextState: ctx.state
-          });
-          lastLogTime = now;
         }
 
         if (readIndex > 48000 * 5) {
@@ -2823,116 +2680,14 @@ class BrowserBot {
 
       window.aurrayVirtualMicStream = dest.stream;
       let totalSamplesInjected = 0; // Declare the variable
-      
-      // Expose buffer length for debugging
-      window.__aurrayBufferLength = () => buffer.length;
-      
-      // Set up getUserMedia interception BEFORE virtual mic is ready
-      // This ensures Google Meet gets the virtual stream when it calls getUserMedia
-      if (!navigator.mediaDevices.__aurrayIntercepted) {
-        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(
-          navigator.mediaDevices
-        );
-        navigator.mediaDevices.getUserMedia = async function (constraints) {
-          const c = constraints || {};
-          const wantsAudio =
-            !!c.audio &&
-            (typeof c.audio === "boolean" || typeof c.audio === "object");
-          const wantsVideo =
-            !!c.video &&
-            (typeof c.video === "boolean" || typeof c.video === "object");
-
-          const contextInfo = {
-            url: window.location.href,
-            origin: window.location.origin,
-            frameName: window.name || 'main',
-            isTopFrame: window === window.top,
-            hasVirtualStream: !!window.aurrayVirtualMicStream,
-            hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
-            hasAudioContext: !!window.__aurrayMasterAudioContext,
-            audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
-          };
-          
-          console.log("[AURRAY] getUserMedia called (from setupVirtualMic)", {
-            wantsAudio,
-            wantsVideo,
-            ...contextInfo,
-            constraints: JSON.stringify(c).substring(0, 200)
-          });
-
-          if (!wantsAudio) {
-            return originalGetUserMedia.call(this, constraints);
-          }
-
-          let virtualStream = window.aurrayVirtualMicStream;
-          
-          if (!virtualStream) {
-            console.warn("[AURRAY] Virtual stream not available in getUserMedia interception, falling back to real mic", contextInfo);
-            return originalGetUserMedia.call(this, constraints);
-          }
-          
-          const trackInfo = {
-            trackCount: virtualStream.getAudioTracks().length,
-            trackIds: virtualStream.getAudioTracks().map(t => t.id),
-            trackStates: virtualStream.getAudioTracks().map(t => t.readyState),
-            trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled),
-            trackMuted: virtualStream.getAudioTracks().map(t => t.muted),
-            audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
-          };
-          console.log("[AURRAY] Virtual stream available, returning it (from setupVirtualMic)", {
-            ...contextInfo,
-            ...trackInfo
-          });
-
-          if (!wantsVideo) {
-            const ms = new MediaStream();
-            virtualStream.getAudioTracks().forEach((t) => {
-              ms.addTrack(t);
-            });
-            return ms;
-          }
-
-          const realStream = await originalGetUserMedia.call(this, {
-            ...c,
-            audio: false,
-          });
-
-          const combined = new MediaStream();
-          virtualStream.getAudioTracks().forEach((t) => combined.addTrack(t));
-          realStream.getVideoTracks().forEach((t) => combined.addTrack(t));
-          return combined;
-        };
-        navigator.mediaDevices.__aurrayIntercepted = true;
-        console.log("[AURRAY] getUserMedia interception set up in setupVirtualMic");
-      }
-      
       window.aurrayInjectAudio48k = (samples) => {
         if (!samples || !samples.length) {
-          console.warn("[AURRAY] aurrayInjectAudio48k called with empty samples", {
-            samplesType: typeof samples,
-            samplesLength: samples?.length,
-            isArray: Array.isArray(samples)
-          });
           return;
         }
-        
-        const samplesBefore = buffer.length;
         for (let i = 0; i < samples.length; i++) {
           buffer.push(samples[i]);
         }
         totalSamplesInjected += samples.length;
-        
-        // Log every 10th injection or first few to debug
-        if (totalSamplesInjected % 10000 === 0 || totalSamplesInjected < 1000) {
-          console.log("[AURRAY] Audio injected into buffer", {
-            samplesInjected: samples.length,
-            totalSamplesInjected: totalSamplesInjected,
-            bufferLengthBefore: samplesBefore,
-            bufferLengthAfter: buffer.length,
-            audioContextState: ctx.state,
-            readIndex: readIndex
-          });
-        }
       };
       
       const finalContextInfo = {
@@ -2944,24 +2699,12 @@ class BrowserBot {
         trackCount: dest.stream.getAudioTracks().length,
         trackIds: dest.stream.getAudioTracks().map(t => t.id),
         trackStates: dest.stream.getAudioTracks().map(t => t.readyState),
-        trackEnabled: dest.stream.getAudioTracks().map(t => t.enabled),
-        trackMuted: dest.stream.getAudioTracks().map(t => t.muted),
         audioContextState: ctx.state,
         hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
         isTeams: isTeams,
         trackConfigured: isTeams && audioTrack ? typeof audioTrack.getSettings === 'function' : false
       };
-      console.log("[AURRAY] Virtual microphone initialized", finalContextInfo);
-      
-      // Try to resume AudioContext if suspended (common in headless mode)
-      if (ctx.state === 'suspended') {
-        console.log("[AURRAY] AudioContext is suspended, attempting to resume...");
-        ctx.resume().then(() => {
-          console.log("[AURRAY] AudioContext resumed successfully", { state: ctx.state });
-        }).catch((err) => {
-          console.error("[AURRAY] Failed to resume AudioContext", { error: err.message, state: ctx.state });
-        });
-      }
+      // Virtual microphone initialized - console log removed (too verbose)
     });
 
     await this.page.waitForFunction(() => !!window.aurrayVirtualMicStream, {
@@ -3270,3 +3013,4 @@ module.exports = {
   config,
   BrowserBot, // Export BrowserBot class for direct instantiation
 };
+
