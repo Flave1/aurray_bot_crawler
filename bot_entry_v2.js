@@ -2827,6 +2827,85 @@ class BrowserBot {
       // Expose buffer length for debugging
       window.__aurrayBufferLength = () => buffer.length;
       
+      // Set up getUserMedia interception BEFORE virtual mic is ready
+      // This ensures Google Meet gets the virtual stream when it calls getUserMedia
+      if (!navigator.mediaDevices.__aurrayIntercepted) {
+        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(
+          navigator.mediaDevices
+        );
+        navigator.mediaDevices.getUserMedia = async function (constraints) {
+          const c = constraints || {};
+          const wantsAudio =
+            !!c.audio &&
+            (typeof c.audio === "boolean" || typeof c.audio === "object");
+          const wantsVideo =
+            !!c.video &&
+            (typeof c.video === "boolean" || typeof c.video === "object");
+
+          const contextInfo = {
+            url: window.location.href,
+            origin: window.location.origin,
+            frameName: window.name || 'main',
+            isTopFrame: window === window.top,
+            hasVirtualStream: !!window.aurrayVirtualMicStream,
+            hasInjectFunction: typeof window.aurrayInjectAudio48k === 'function',
+            hasAudioContext: !!window.__aurrayMasterAudioContext,
+            audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+          };
+          
+          console.log("[AURRAY] getUserMedia called (from setupVirtualMic)", {
+            wantsAudio,
+            wantsVideo,
+            ...contextInfo,
+            constraints: JSON.stringify(c).substring(0, 200)
+          });
+
+          if (!wantsAudio) {
+            return originalGetUserMedia.call(this, constraints);
+          }
+
+          let virtualStream = window.aurrayVirtualMicStream;
+          
+          if (!virtualStream) {
+            console.warn("[AURRAY] Virtual stream not available in getUserMedia interception, falling back to real mic", contextInfo);
+            return originalGetUserMedia.call(this, constraints);
+          }
+          
+          const trackInfo = {
+            trackCount: virtualStream.getAudioTracks().length,
+            trackIds: virtualStream.getAudioTracks().map(t => t.id),
+            trackStates: virtualStream.getAudioTracks().map(t => t.readyState),
+            trackEnabled: virtualStream.getAudioTracks().map(t => t.enabled),
+            trackMuted: virtualStream.getAudioTracks().map(t => t.muted),
+            audioContextState: window.__aurrayMasterAudioContext?.state || 'N/A'
+          };
+          console.log("[AURRAY] Virtual stream available, returning it (from setupVirtualMic)", {
+            ...contextInfo,
+            ...trackInfo
+          });
+
+          if (!wantsVideo) {
+            const ms = new MediaStream();
+            virtualStream.getAudioTracks().forEach((t) => {
+              ms.addTrack(t);
+            });
+            return ms;
+          }
+
+          const realStream = await originalGetUserMedia.call(this, {
+            ...c,
+            audio: false,
+          });
+
+          const combined = new MediaStream();
+          virtualStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+          realStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+          return combined;
+        };
+        navigator.mediaDevices.__aurrayIntercepted = true;
+        console.log("[AURRAY] getUserMedia interception set up in setupVirtualMic");
+      }
+      
       window.aurrayInjectAudio48k = (samples) => {
         if (!samples || !samples.length) {
           console.warn("[AURRAY] aurrayInjectAudio48k called with empty samples", {
