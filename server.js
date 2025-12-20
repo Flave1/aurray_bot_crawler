@@ -324,7 +324,7 @@ app.get("/meetings/:meetingId", (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`[INFO] Browser bot server listening on port ${PORT}`);
   console.log(`[INFO] Health check: http://localhost:${PORT}/health`);
 });
