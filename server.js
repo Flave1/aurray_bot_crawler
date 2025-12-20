@@ -5,9 +5,25 @@
 
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const { BrowserBot } = require("./bot_entry_v2.js");
 
 const app = express();
+
+// Enable CORS for all routes
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
@@ -321,6 +337,112 @@ app.get("/meetings/:meetingId", (req, res) => {
     connectionState: bot.connectionState,
     voiceState: bot.voiceState,
   });
+});
+
+/**
+ * Get list of screenshot images for a meeting
+ * GET /meetings/:meetingId/screenshots
+ */
+app.get("/meetings/:meetingId/screenshots", (req, res) => {
+  try {
+    const meetingId = req.params.meetingId;
+    const screenshotsDir = path.join(__dirname, "logs", "screenshots");
+    
+    // Ensure directory exists
+    if (!fs.existsSync(screenshotsDir)) {
+      return res.json({
+        meetingId,
+        screenshots: [],
+        count: 0,
+      });
+    }
+
+    // Read directory and filter for image files
+    const files = fs.readdirSync(screenshotsDir);
+    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+    
+    // Show all screenshots (no filtering by meetingId)
+    const screenshots = files
+      .filter(file => {
+        const ext = path.extname(file).toLowerCase();
+        return imageExtensions.includes(ext);
+      })
+      .map(file => {
+        const filePath = path.join(screenshotsDir, file);
+        const stats = fs.statSync(filePath);
+        return {
+          filename: file,
+          url: `/meetings/${meetingId}/screenshots/${file}`,
+          size: stats.size,
+          createdAt: stats.birthtime.toISOString(),
+          modifiedAt: stats.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort by newest first
+
+    res.json({
+      meetingId,
+      screenshots,
+      count: screenshots.length,
+    });
+  } catch (error) {
+    console.error("[ERROR] Failed to list screenshots:", error);
+    res.status(500).json({
+      error: "Failed to list screenshots",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Serve screenshot image file
+ * GET /meetings/:meetingId/screenshots/:filename
+ */
+app.get("/meetings/:meetingId/screenshots/:filename", (req, res) => {
+  try {
+    const meetingId = req.params.meetingId;
+    const filename = req.params.filename;
+    
+    // Security: prevent directory traversal
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return res.status(400).json({ error: "Invalid filename" });
+    }
+
+    const screenshotsDir = path.join(__dirname, "logs", "screenshots");
+    const filePath = path.join(screenshotsDir, filename);
+
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Screenshot not found" });
+    }
+
+    // Verify file is an image
+    const ext = path.extname(filename).toLowerCase();
+    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+    if (!imageExtensions.includes(ext)) {
+      return res.status(400).json({ error: "Invalid file type" });
+    }
+
+    // Set appropriate content type
+    const contentTypeMap = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+    };
+    res.setHeader('Content-Type', contentTypeMap[ext] || 'application/octet-stream');
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+  } catch (error) {
+    console.error("[ERROR] Failed to serve screenshot:", error);
+    res.status(500).json({
+      error: "Failed to serve screenshot",
+      message: error.message,
+    });
+  }
 });
 
 // Start server
