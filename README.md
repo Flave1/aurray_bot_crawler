@@ -24,16 +24,6 @@ npm start
 node server.js
 ```
 
-### Railway Deployment
-
-See [RAILWAY_DEPLOY.md](./RAILWAY_DEPLOY.md) for detailed deployment instructions.
-
-**Quick Steps:**
-1. Create Railway service
-2. Set Root Directory to `browser_bot`
-3. Add environment variables
-4. Deploy!
-
 ## Environment Variables
 
 ### Required

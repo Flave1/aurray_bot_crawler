@@ -1,11 +1,17 @@
+# Nixpacks configuration for Railway deployment
+# This file configures how Railway builds and runs your application
+
 [phases.setup]
 nixPkgs = ["nodejs-18_x", "chromium"]
 
 [phases.install]
 cmds = [
-  "npm ci",
+  "npm ci --only=production",
   "npx playwright install chromium --with-deps || npx playwright install chromium"
 ]
+
+[phases.build]
+cmds = ["echo 'Build complete'"]
 
 [start]
 cmd = "node server.js"

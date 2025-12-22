@@ -120,6 +120,8 @@ const DEFAULT_BROWSER_ARGS = [
   "--use-fake-device-for-media-stream",
   `--use-file-for-fake-audio-capture=${fakeWavPath}`,
   `--use-file-for-fake-video-capture=${fakeY4mPath}`,
+  "--enable-features=WebAudio", // Ensure Web Audio API is enabled
+  "--disable-audio-output-debug-recording", // Disable debug recording that might interfere
 ];
 
 class StructuredLogger {
@@ -205,6 +207,7 @@ class BrowserBot {
     this.playbackQueue = []; // Queue of audio chunks to play
     this.isPlayingQueue = false; // Flag to prevent concurrent queue processing
     this.shouldAcceptNewChunks = true; // Flag to stop accepting new chunks after response is done
+    this.MAX_QUEUE_SIZE = 50; // Maximum chunks in queue (prevents memory buildup)
   }
 
   /**
@@ -878,29 +881,7 @@ class BrowserBot {
     }
 
     this.logger.info("Navigation complete", { url: this.page.url() });
-    
-    // Log all config variables after navigation
-    this.logger.info("Bot configuration after navigation", {
-      meetingUrl: this.config.meetingUrl,
-      botName: this.config.botName,
-      platform: this.config.platform,
-      headless: this.config.headless,
-      shouldSendStatus: this.config.shouldSendStatus,
-      browserEngine: this.config.browserEngine,
-      browserLocale: this.config.browserLocale,
-      browserArgs: this.config.browserArgs,
-      navigationTimeoutMs: this.config.navigationTimeoutMs,
-      logLevel: this.config.logLevel,
-      sessionId: this.config.sessionId,
-      apiBaseUrl: this.config.apiBaseUrl,
-      isOrganizer: this.config.isOrganizer,
-      voice: this.config.voice,
-      hasOpenaiApiKey: !!this.config.openaiApiKey,
-      hasOpenaiRealtimeWsUrl: !!this.config.openaiRealtimeWsUrl,
-      instructions: this.config.instructions ? this.config.instructions.substring(0, 100) + '...' : undefined,
-    });
 
-    await this.saveAuthState();
     if (this.config.platform === "google_meet") {
       const currentUrl = this.page.url();
       if (
@@ -2486,6 +2467,8 @@ class BrowserBot {
     );
 
     // Convert Float32Array to regular array for page.evaluate
+    // Note: Array.from() creates a copy, but it's necessary for page.evaluate serialization
+    // The memory overhead is acceptable since chunks are processed quickly
     const samples48kArray = Array.from(samples48k);
 
     // Only attempt to play audio if we have a valid connection and page
@@ -2497,6 +2480,18 @@ class BrowserBot {
     // This prevents adding chunks after response.audio.done arrives
     if (!this.shouldAcceptNewChunks) {
       return; // Silently skip - response is done, let queue finish
+    }
+    
+    // Prevent queue overflow: if queue is too large, drop oldest chunks
+    if (this.playbackQueue.length >= this.MAX_QUEUE_SIZE) {
+      // Queue is full - drop oldest chunk to make room
+      const dropped = this.playbackQueue.shift();
+      if (this.audioOutputChunksReceived % 100 === 0) {
+        this.logger.warn("⚠️ Playback queue overflow - dropped chunk", {
+          queueSize: this.playbackQueue.length,
+          chunkSize: dropped?.length || 0
+        });
+      }
     }
     
     // Priority 1: Add to playback queue instead of playing immediately
@@ -2625,6 +2620,14 @@ class BrowserBot {
 
       const ctx = new AudioContextClass({ sampleRate: 48000 });
       window.__aurrayMasterAudioContext = ctx;
+      
+      // Ensure AudioContext is running (critical for headless mode)
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(err => {
+          console.error("[AURRAY] Failed to resume AudioContext", err);
+        });
+      }
+      
       console.log("[AURRAY] AudioContext created", {
         ...contextInfo,
         state: ctx.state,
@@ -2634,6 +2637,10 @@ class BrowserBot {
       const buffer = [];
       let readIndex = 0;
       const processor = ctx.createScriptProcessor(1024, 1, 1);
+      
+      // Buffer size limits to prevent memory leaks in long meetings
+      const MAX_BUFFER_SIZE = 48000 * 10; // 10 seconds max buffer (240KB at 48kHz)
+      const CLEANUP_THRESHOLD = 48000 * 5; // Clean up when 5 seconds consumed
 
       let tonePhase = 0;
       const TONE_FREQ = 20;
@@ -2654,7 +2661,10 @@ class BrowserBot {
           }
         }
 
-        if (readIndex > 48000 * 5) {
+        // Efficient buffer cleanup: only when significant data consumed
+        if (readIndex > CLEANUP_THRESHOLD) {
+          // More efficient: shift readIndex items from front
+          // This is still O(n) but necessary for array cleanup
           buffer.splice(0, readIndex);
           readIndex = 0;
         }
@@ -2708,6 +2718,20 @@ class BrowserBot {
         if (!samples || !samples.length) {
           return;
         }
+        
+        // Prevent buffer overflow: if buffer is too large, drop oldest samples
+        const currentBufferSize = buffer.length - readIndex;
+        if (currentBufferSize + samples.length > MAX_BUFFER_SIZE) {
+          // Buffer is getting too large - drop oldest samples to make room
+          const samplesToDrop = (currentBufferSize + samples.length) - MAX_BUFFER_SIZE;
+          if (samplesToDrop > 0) {
+            buffer.splice(0, readIndex + samplesToDrop);
+            readIndex = 0;
+            console.warn("[AURRAY] Audio buffer overflow prevented - dropped", samplesToDrop, "samples");
+          }
+        }
+        
+        // Add new samples
         for (let i = 0; i < samples.length; i++) {
           buffer.push(samples[i]);
         }
@@ -2755,51 +2779,16 @@ class BrowserBot {
   }
 
   async saveAuthState() {
-    this.logger.info("saveAuthState called", {
-      platform: this.config.platform,
-      hasContext: !!this.context,
-      sessionId: this.config.sessionId,
-      contextState: this.context?.browser()?.isConnected() ? "connected" : "disconnected"
-    });
-    
     if (this.config.platform === "google_meet") {
-      this.logger.info("Platform is google_meet, proceeding with auth state save");
       try {
         // Save auth state with sessionId to make it unique per browser instance
         const sessionIdHash = this.config.sessionId.substring(0, 8);
         const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
-        
-        this.logger.info("Attempting to save auth state", {
-          sessionIdHash,
-          authStatePath,
-          __dirname,
-          hasContext: !!this.context,
-          contextType: this.context ? typeof this.context : "undefined"
-        });
-        
         await this.context.storageState({ path: authStatePath });
-        
-        this.logger.info("Auth state saved successfully", { 
-          path: authStatePath, 
-          sessionId: this.config.sessionId,
-          fileExists: fs.existsSync(authStatePath)
-        });
       } catch (error) {
-        this.logger.warn("Failed to save auth state", { 
-          error: error.message,
-          errorStack: error.stack,
-          errorName: error.name,
-          hasContext: !!this.context,
-          contextState: this.context ? "exists" : "missing"
-        });
+        // Silently fail - auth state save is not critical
       }
-    } else {
-      this.logger.info("Platform is not google_meet, skipping auth state save", {
-        platform: this.config.platform
-      });
     }
-    
-    this.logger.info("saveAuthState completed");
   }
 
   async cleanup() {

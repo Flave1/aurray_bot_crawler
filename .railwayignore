@@ -1,7 +1,12 @@
-# Railway ignore file - files to exclude from deployment
+# Railway ignore file
+# Files and directories to exclude from deployment
+# Matches exclusions from deploy-to-ec2.sh
 
-# Dependencies (installed during build)
+# Dependencies (will be installed on Railway)
 node_modules/
+
+# Git
+.git/
 
 # Logs
 logs/
@@ -9,38 +14,42 @@ logs/
 
 # Test files
 __tests__/
-*.test.js
-*.spec.js
+
+# Environment files (use Railway environment variables instead)
+.env
 
 # Documentation
 *.md
-!README.md
 
-# Development files
-.env.local
-.env.*.local
-.vscode/
-.idea/
+# Deployment scripts
+deploy*.sh
+ec2-*.sh
+
+# Docker files (Railway uses Nixpacks)
+Dockerfile
+.dockerignore
+
+# EC2-specific documentation
+EC2_*.md
+DEPLOYMENT_*.md
+QUICK_*.md
+SECURITY_*.md
+AUDIO_*.md
+
+# Scripts directory
+scripts/
+
+# Legacy bot entry file
+bot_entry.js
+
+# Fake media files
+fake.y4m
+fake.wav
+
+# SSH keys
+*.pem
+keypair.pem
 
 # OS files
 .DS_Store
-Thumbs.db
-
-# Build artifacts
-dist/
-build/
-*.map
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-
-# Screenshots (generated at runtime)
-logs/screenshots/
-
-# Fake test files
-fake.wav
-fake.y4m
-sound_wave.png
 

@@ -40,7 +40,7 @@ RUN npx playwright install chromium --with-deps || npx playwright install chromi
 # Copy application code
 COPY . .
 
-# Expose port (Fly.io will set PORT env var)
+# Expose port
 EXPOSE 8080
 
 # Health check - use curl to check /health endpoint

@@ -23,10 +23,63 @@ app.use((req, res, next) => {
     return res.status(200).end();
   }
   
+  // Set request timeout (30 seconds)
+  req.setTimeout(30000, () => {
+    if (!res.headersSent) {
+      res.status(408).json({ error: "Request timeout" });
+    }
+  });
+  
+  // Handle connection close gracefully
+  req.on('close', () => {
+    if (!res.headersSent && !res.finished) {
+      // Request was aborted - this is normal, just log at debug level
+      // Don't try to send response as connection is already closed
+    }
+  });
+  
   next();
 });
 
-app.use(express.json());
+// Configure JSON body parser with limits and error handling
+app.use(express.json({
+  limit: '10mb', // Limit request body size
+  verify: (req, res, buf, encoding) => {
+    // Verify request body if needed
+  }
+}));
+
+// Error handler for aborted requests and body parsing errors
+app.use((error, req, res, next) => {
+  // Handle request aborted errors gracefully
+  if (error.type === 'entity.parse.failed' || 
+      error.message === 'request aborted' ||
+      error.message?.includes('aborted') ||
+      error.name === 'BadRequestError') {
+    // Client disconnected or request was aborted - log but don't crash
+    console.warn(`[WARN] Request aborted: ${req.method} ${req.path}`, {
+      error: error.message,
+      type: error.type || error.name
+    });
+    // Only send response if headers haven't been sent and connection is still open
+    if (!res.headersSent && !req.aborted) {
+      return res.status(400).json({
+        error: "Request aborted or invalid JSON",
+        message: "The request was cancelled or contained invalid data"
+      });
+    }
+    return; // Connection already closed, don't try to send response
+  }
+  
+  // Handle other errors
+  if (!res.headersSent && !req.aborted) {
+    console.error("[ERROR] Unhandled error:", error);
+    res.status(500).json({
+      error: "Internal server error",
+      message: error.message
+    });
+  }
+});
 
 const PORT = process.env.PORT || 3001;
 const activeMeetings = new Map(); // meetingId -> { bot, startTime, envVars, logs }
@@ -83,6 +136,13 @@ app.get("/health", (req, res) => {
  * Body: { meetingId, meetingUrl, platform, botName, sessionId, ...envVars }
  */
 app.post("/start-meeting", async (req, res) => {
+  // Handle request abort gracefully
+  req.on('close', () => {
+    if (!res.headersSent) {
+      console.warn(`[WARN] Request aborted: POST /start-meeting`);
+    }
+  });
+
   try {
     const {
       meetingId,
@@ -213,6 +273,12 @@ app.post("/start-meeting", async (req, res) => {
       message: "Meeting bot started",
     });
   } catch (error) {
+    // Don't send response if request was aborted
+    if (req.aborted || res.headersSent) {
+      console.warn("[WARN] Request aborted during start-meeting, skipping response");
+      return;
+    }
+    
     console.error("[ERROR] Failed to start meeting:", error);
     res.status(500).json({
       error: "Failed to start meeting",
@@ -226,6 +292,13 @@ app.post("/start-meeting", async (req, res) => {
  * DELETE /stop-meeting/:meetingId
  */
 app.delete("/stop-meeting/:meetingId", async (req, res) => {
+  // Handle request abort gracefully
+  req.on('close', () => {
+    if (!res.headersSent) {
+      console.warn(`[WARN] Request aborted: DELETE /stop-meeting/${req.params.meetingId}`);
+    }
+  });
+
   try {
     const meetingId = req.params.meetingId;
 
@@ -260,6 +333,12 @@ app.delete("/stop-meeting/:meetingId", async (req, res) => {
       message: "Meeting bot stopped",
     });
   } catch (error) {
+    // Don't send response if request was aborted
+    if (req.aborted || res.headersSent) {
+      console.warn("[WARN] Request aborted during stop-meeting, skipping response");
+      return;
+    }
+    
     console.error("[ERROR] Failed to stop meeting:", error);
     res.status(500).json({
       error: "Failed to stop meeting",
@@ -435,10 +514,41 @@ app.get("/meetings/:meetingId/screenshots/:filename", (req, res) => {
     };
     res.setHeader('Content-Type', contentTypeMap[ext] || 'application/octet-stream');
     
-    // Stream the file
+    // Stream the file with error handling for aborted requests
     const fileStream = fs.createReadStream(filePath);
+    
+    // Handle client disconnect during streaming
+    req.on('close', () => {
+      if (!res.headersSent) {
+        fileStream.destroy();
+      }
+    });
+    
+    fileStream.on('error', (error) => {
+      if (!res.headersSent) {
+        console.error("[ERROR] File stream error:", error);
+        res.status(500).json({
+          error: "Failed to read screenshot",
+          message: error.message,
+        });
+      }
+      fileStream.destroy();
+    });
+    
+    res.on('close', () => {
+      if (!fileStream.destroyed) {
+        fileStream.destroy();
+      }
+    });
+    
     fileStream.pipe(res);
   } catch (error) {
+    // Don't send response if request was aborted
+    if (req.aborted || res.headersSent) {
+      console.warn("[WARN] Request aborted during screenshot serve, skipping response");
+      return;
+    }
+    
     console.error("[ERROR] Failed to serve screenshot:", error);
     res.status(500).json({
       error: "Failed to serve screenshot",
