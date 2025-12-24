@@ -139,11 +139,13 @@ class StructuredLogger {
   }
 
   warn(message, meta = {}) {
-    console.warn(`[WARN] ${message}`, Object.keys(meta).length ? meta : "");
+    // Use console.log instead of console.warn to avoid stderr (PowerShell treats stderr as exceptions)
+    console.log(`[WARN] ${message}`, Object.keys(meta).length ? meta : "");
   }
 
   error(message, meta = {}) {
-    console.error(`[ERROR] ${message}`, Object.keys(meta).length ? meta : "");
+    // Use console.log instead of console.error to avoid stderr (PowerShell treats stderr as exceptions)
+    console.log(`[ERROR] ${message}`, Object.keys(meta).length ? meta : "");
   }
 
   debug(message, meta = {}) {
@@ -750,6 +752,12 @@ class BrowserBot {
               }
               
               window.aurrayVirtualMicStream = dest.stream;
+              
+              // Store buffer reference globally so setupVirtualMic can use it if it runs later
+              window.__aurrayInlineBuffer = buffer;
+              window.__aurrayInlineReadIndex = readIndex;
+              window.__aurrayInlineTotalSamplesInjected = totalSamplesInjected;
+              
               window.aurrayInjectAudio48k = (samples) => {
                 if (!samples || !samples.length) {
                   return;
@@ -758,6 +766,7 @@ class BrowserBot {
                   buffer.push(samples[i]);
                 }
                 totalSamplesInjected += samples.length;
+                window.__aurrayInlineTotalSamplesInjected = totalSamplesInjected;
               };
               
               virtualStream = dest.stream;
@@ -842,6 +851,15 @@ class BrowserBot {
     });
 
     this.page.on("pageerror", (err) => {
+      // Suppress Google Meet's internal minified errors (e.g., '_.lO', '_.D$f', etc.) - they're non-critical
+      // These errors appear on Windows but not Linux/Mac, likely due to platform-specific code paths in Google Meet
+      // Pattern: Very short minified error codes (1-6 chars after '_.', may include special chars like $)
+      // This won't catch legitimate errors which typically have more context, spaces, or longer messages
+      const errorMsg = err.message ? err.message.trim() : '';
+      if (errorMsg && /^_\.[\w$]{1,6}$/.test(errorMsg)) {
+        this.logger.debug("Suppressed Google Meet internal minified error", { err: errorMsg });
+        return; // Don't log or handle this error
+      }
       this.logger.error("Page error", { err: err.message });
     });
 
@@ -2604,6 +2622,25 @@ class BrowserBot {
     // Virtual mic setup - context logging removed (too verbose)
 
     await this.page.evaluate(() => {
+      // Check if virtual mic was already created inline (e.g., in getUserMedia)
+      // If so, we need to update the injection function to use the existing buffer
+      if (window.aurrayVirtualMicStream && window.__aurrayInlineBuffer) {
+        // Update the injection function to use the existing buffer
+        const existingBuffer = window.__aurrayInlineBuffer;
+        window.aurrayInjectAudio48k = (samples) => {
+          if (!samples || !samples.length) {
+            return;
+          }
+          for (let i = 0; i < samples.length; i++) {
+            existingBuffer.push(samples[i]);
+          }
+          if (window.__aurrayInlineTotalSamplesInjected !== undefined) {
+            window.__aurrayInlineTotalSamplesInjected += samples.length;
+          }
+        };
+        
+        return; // Don't create a new virtual mic
+      }
       const AudioContextClass =
         window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) {
@@ -2627,6 +2664,19 @@ class BrowserBot {
           console.error("[AURRAY] Failed to resume AudioContext", err);
         });
       }
+      
+      // Monitor AudioContext state changes and auto-resume if suspended
+      // This is critical for Windows where AudioContext can become suspended due to autoplay policies
+      ctx.onstatechange = () => {
+        if (ctx.state === 'suspended') {
+          console.warn("[AURRAY] AudioContext became suspended, attempting to resume", contextInfo);
+          ctx.resume().catch(err => {
+            console.error("[AURRAY] Failed to resume suspended AudioContext", err);
+          });
+        } else if (ctx.state === 'running') {
+          console.log("[AURRAY] AudioContext is running", contextInfo);
+        }
+      };
       
       console.log("[AURRAY] AudioContext created", {
         ...contextInfo,
@@ -2713,10 +2763,56 @@ class BrowserBot {
       }
 
       window.aurrayVirtualMicStream = dest.stream;
+      
+      // Windows-specific: Create a hidden consumer to ensure ScriptProcessorNode processes
+      // On Windows, if MediaStreamDestination isn't actively consumed, onaudioprocess may not fire
+      // This creates a silent AudioContext that consumes the stream to keep it active
+      try {
+        const consumerCtx = new AudioContextClass({ sampleRate: 48000 });
+        const consumerSource = consumerCtx.createMediaStreamSource(dest.stream);
+        const consumerGain = consumerCtx.createGain();
+        consumerGain.gain.value = 0; // Silent - just consuming, not playing
+        consumerSource.connect(consumerGain);
+        consumerGain.connect(consumerCtx.destination);
+        
+        // Ensure consumer context is running
+        if (consumerCtx.state === 'suspended') {
+          consumerCtx.resume().catch(err => {
+            console.error("[AURRAY] Failed to resume consumer AudioContext", err);
+          });
+        }
+        
+        // Store consumer for cleanup
+        window.__aurrayStreamConsumer = {
+          context: consumerCtx,
+          source: consumerSource,
+          gain: consumerGain,
+          cleanup: () => {
+            try {
+              consumerSource.disconnect();
+              consumerGain.disconnect();
+              consumerCtx.close();
+            } catch (e) {
+              console.error("[AURRAY] Error cleaning up stream consumer", e);
+            }
+          }
+        };
+      } catch (error) {
+        // Silent fail - consumer is optional
+      }
+      
       let totalSamplesInjected = 0; // Declare the variable
       window.aurrayInjectAudio48k = (samples) => {
         if (!samples || !samples.length) {
           return;
+        }
+        
+        // Check AudioContext state before injecting audio (critical for Windows)
+        // If suspended, attempt to resume immediately
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(err => {
+            console.error("[AURRAY] Failed to resume AudioContext during injection", err);
+          });
         }
         
         // Prevent buffer overflow: if buffer is too large, drop oldest samples
@@ -2727,7 +2823,6 @@ class BrowserBot {
           if (samplesToDrop > 0) {
             buffer.splice(0, readIndex + samplesToDrop);
             readIndex = 0;
-            console.warn("[AURRAY] Audio buffer overflow prevented - dropped", samplesToDrop, "samples");
           }
         }
         

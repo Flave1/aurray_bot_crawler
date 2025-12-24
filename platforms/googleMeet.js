@@ -224,17 +224,39 @@ class GoogleMeetController extends PlatformController {
     if (isOrganizer && this.config.sendStatusUpdate) {
       this.logger.info("Bot is organizer - setting up auto-admit functionality");
 
+      // Open People panel in background (non-blocking)
+      this._openPeoplePanel().catch(err => {
+        this.logger.warn('Error opening People panel', { error: err.message });
+      });
+
+      // Start polling 2 seconds after joining (regardless of panel state)
+      // The polling function will handle retrying if panel isn't open yet
+      setTimeout(() => {
+        this.logger.info('Starting admit polling 2 seconds after join');
+        this._startAdmitAllPolling();
+      }, 2000);
+    } else {
+      this.logger.info(
+        "afterJoin skipped - bot is not organizer or status updates not available",
+        {
+          isOrganizer,
+          hasSendStatusUpdate: !!this.config.sendStatusUpdate,
+        }
+      );
+    }
+  }
+
+  async _openPeoplePanel() {
+    try {
       const peopleButton = await this.page.locator('button[aria-label^="People -"][aria-label*="joined"]').first();
       if (await peopleButton.isVisible({ timeout: 3000 }).catch(() => false)) {
         const isExpanded = await peopleButton.getAttribute('aria-expanded');
         this.logger.info('People button state', { ariaExpanded: isExpanded });
         
-        let panelIsOpen = false;
-        
         // Check if panel is already open
         if (isExpanded === 'true') {
-          this.logger.info('People panel is already open, starting admit polling');
-          panelIsOpen = true;
+          this.logger.info('People panel is already open');
+          return true;
         } else {
           // Open panel if not already open
           await peopleButton.click();
@@ -244,31 +266,20 @@ class GoogleMeetController extends PlatformController {
           // Verify it opened
           const expandedAfter = await peopleButton.getAttribute('aria-expanded');
           if (expandedAfter === 'true') {
-            this.logger.info('People panel opened successfully, starting admit polling');
-            panelIsOpen = true;
+            this.logger.info('People panel opened successfully');
+            return true;
           } else {
             this.logger.warn('People panel may not have opened, aria-expanded:', expandedAfter);
+            return false;
           }
-        }
-        
-        // Only start polling if panel is confirmed open
-        if (panelIsOpen) {
-          this.logger.info('Starting polling for "Admit all" button');
-          this._startAdmitAllPolling();
-        } else {
-          this.logger.warn('Cannot start admit polling - People panel is not open');
         }
       } else {
         this.logger.warn('"People" button not found or not visible');
+        return false;
       }
-    } else {
-      this.logger.info(
-        "afterJoin skipped - bot is not organizer or status updates not available",
-        {
-          isOrganizer,
-          hasSendStatusUpdate: !!this.config.sendStatusUpdate,
-        }
-      );
+    } catch (error) {
+      this.logger.warn('Error opening People panel', { error: error.message });
+      return false;
     }
   }
 
