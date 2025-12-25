@@ -1,6 +1,6 @@
 # Railway ignore file
 # Files and directories to exclude from deployment
-# Matches exclusions from deploy-to-ec2.sh
+# Matches exclusions from deploy-to-ec2.sh, plus EC2-specific files
 
 # Dependencies (will be installed on Railway)
 node_modules/
@@ -21,15 +21,16 @@ __tests__/
 # Documentation
 *.md
 
-# Deployment scripts
+# EC2 deployment scripts (not needed on Railway)
 deploy*.sh
 ec2-*.sh
+deploy-to-ec2.sh
+deploy.sh
+ec2-setup.sh
+ec2-user-data.sh
 
-# Docker files (Railway uses Nixpacks)
-Dockerfile
-.dockerignore
-
-# EC2-specific documentation
+# EC2-specific files
+browser-bot.service
 EC2_*.md
 DEPLOYMENT_*.md
 QUICK_*.md

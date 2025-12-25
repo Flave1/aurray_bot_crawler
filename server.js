@@ -476,6 +476,126 @@ app.get("/meetings/:meetingId/screenshots", (req, res) => {
 });
 
 /**
+ * Upload Google auth state file
+ * POST /auth/google/upload-state
+ * Body: The entire auth state JSON object, or { authState: {...} }
+ * 
+ * Accepts the auth state JSON directly in the request body.
+ * Frontend should read the file and send it as JSON.
+ */
+app.post("/auth/google/upload-state", (req, res) => {
+  try {
+    let authStateData;
+    
+    // Check if wrapped in { authState: {...} } or sent directly
+    if (req.body.authState) {
+      authStateData = req.body.authState;
+    } else {
+      // Assume the entire body is the auth state
+      authStateData = req.body;
+    }
+
+    // Validate the structure
+    if (!authStateData || typeof authStateData !== 'object') {
+      return res.status(400).json({
+        error: "Invalid auth state format",
+        message: "Auth state must be a JSON object. Send the auth state JSON directly in the request body, or wrap it in { authState: {...} }"
+      });
+    }
+
+    // Basic validation - check for expected structure
+    if (!authStateData.cookies || !Array.isArray(authStateData.cookies)) {
+      return res.status(400).json({
+        error: "Invalid auth state format",
+        message: "Auth state must contain a 'cookies' array"
+      });
+    }
+
+    // Determine output path
+    const outputPath = path.resolve(__dirname, "google_auth_state.json");
+    const outputDir = path.dirname(outputPath);
+
+    // Ensure directory exists
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Write the file
+    fs.writeFileSync(outputPath, JSON.stringify(authStateData, null, 2), 'utf8');
+
+    console.log(`[INFO] Google auth state file uploaded and saved to: ${outputPath}`);
+
+    res.json({
+      ok: true,
+      message: "Google auth state file uploaded successfully",
+      path: outputPath,
+      cookiesCount: authStateData.cookies.length,
+      originsCount: authStateData.origins?.length || 0
+    });
+  } catch (error) {
+    console.error("[ERROR] Failed to upload auth state:", error);
+    res.status(500).json({
+      error: "Failed to upload auth state",
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Upload Google auth state file (alternative endpoint accepting JSON in body)
+ * POST /auth/google/upload-state-json
+ * Body: { authState: {...} }
+ */
+app.post("/auth/google/upload-state-json", (req, res) => {
+  try {
+    const { authState } = req.body;
+
+    if (!authState || typeof authState !== 'object') {
+      return res.status(400).json({
+        error: "Invalid request",
+        message: "Request body must contain 'authState' object"
+      });
+    }
+
+    // Basic validation
+    if (!authState.cookies || !Array.isArray(authState.cookies)) {
+      return res.status(400).json({
+        error: "Invalid auth state format",
+        message: "Auth state must contain a 'cookies' array"
+      });
+    }
+
+    // Determine output path
+    const outputPath = path.resolve(__dirname, "google_auth_state.json");
+    const outputDir = path.dirname(outputPath);
+
+    // Ensure directory exists
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Write the file
+    fs.writeFileSync(outputPath, JSON.stringify(authState, null, 2), 'utf8');
+
+    console.log(`[INFO] Google auth state file uploaded and saved to: ${outputPath}`);
+
+    res.json({
+      ok: true,
+      message: "Google auth state file uploaded successfully",
+      path: outputPath,
+      cookiesCount: authState.cookies.length,
+      originsCount: authState.origins?.length || 0
+    });
+  } catch (error) {
+    console.error("[ERROR] Failed to upload auth state:", error);
+    res.status(500).json({
+      error: "Failed to upload auth state",
+      message: error.message
+    });
+  }
+});
+
+/**
  * Serve screenshot image file
  * GET /meetings/:meetingId/screenshots/:filename
  */

@@ -556,26 +556,18 @@ class BrowserBot {
     this.logger.info("Checking for Google Meet auth state (before) " + this.config.platform);
     if (this.config.platform === "google_meet") {
       this.logger.info("Inside Google Meet auth state block (in)");
-      // Use sessionId to create unique storage state path per browser instance
-      const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
+      // Use single shared auth state file across all browser instances
+      const authStatePath = path.resolve(__dirname, "google_auth_state.json");
       if (fs.existsSync(authStatePath)) {
         contextOptions.storageState = authStatePath;
         this.logger.info("Using Google auth storageState", { authStatePath, sessionId: this.config.sessionId });
       } else {
-        // Fallback to default if session-specific doesn't exist
-        const defaultAuthStatePath = path.resolve(__dirname, "google_auth_state.json");
-        if (fs.existsSync(defaultAuthStatePath)) {
-          contextOptions.storageState = defaultAuthStatePath;
-          this.logger.info("Using default Google auth storageState", { authStatePath: defaultAuthStatePath });
-        }
+        this.logger.info("Google auth state file not found, will create new one after login", { authStatePath });
       }
     }
     this.logger.info("Finished Google Meet auth state check (after)", { sessionId: this.config.sessionId });
 
     this.context = await this.browser.newContext(contextOptions);
-
-    // Save auth state immediately after browser context is created
-    await this.saveAuthState();
 
     const origin = getPlatformPermissionsOrigin(
       this.config.platform,
@@ -923,6 +915,8 @@ class BrowserBot {
             this.logger.warn("Login timeout - please check browser");
           });
 
+        // Save auth state after successful login
+        await this.saveAuthState();
       }
     }
   }
@@ -2876,12 +2870,13 @@ class BrowserBot {
   async saveAuthState() {
     if (this.config.platform === "google_meet") {
       try {
-        // Save auth state with sessionId to make it unique per browser instance
-        const sessionIdHash = this.config.sessionId.substring(0, 8);
-        const authStatePath = path.resolve(__dirname, `google_auth_state_${sessionIdHash}.json`);
+        // Save auth state to shared file across all browser instances
+        const authStatePath = path.resolve(__dirname, "google_auth_state.json");
         await this.context.storageState({ path: authStatePath });
+        this.logger.info("Google auth state saved", { authStatePath, sessionId: this.config.sessionId });
       } catch (error) {
         // Silently fail - auth state save is not critical
+        this.logger.warn("Failed to save Google auth state", { error: error.message });
       }
     }
   }
