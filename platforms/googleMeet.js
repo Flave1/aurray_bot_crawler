@@ -51,197 +51,225 @@ class GoogleMeetController extends PlatformController {
       this.logger.error("Failed to take screenshot", {
         reason,
         error: error.message,
+        stack: error.stack,
       });
+      // Don't throw - screenshot failure shouldn't break the flow
     }
   }
 
   async beforeJoin() {
-    await this.page.waitForLoadState("domcontentloaded");
-    await this.page.waitForTimeout(2000);
-    this.logger.info("Page ready");
+    try {
+      await this.page.waitForLoadState("domcontentloaded");
+      await this.page.waitForTimeout(2000);
+      this.logger.info("Page ready");
+    } catch (error) {
+      this.logger.error("Error in beforeJoin", { error: error.message, stack: error.stack });
+      // Don't throw - log and continue
+    }
   }
 
   async performJoin() {
-    this.logger.info("Looking for join button");
+    try {
+      this.logger.info("Looking for join button");
 
-    const joinButton = await this.clickFirstVisible(
-      [
-        'button:has-text("Join now")',
-        'button:has-text("Ask to join")',
-        'button:has-text("Switch here")',
-      ],
-      { timeout: 5000 }
-    ); // 5 seconds
+      const joinButton = await this.clickFirstVisible(
+        [
+          'button:has-text("Join now")',
+          'button:has-text("Ask to join")',
+          'button:has-text("Switch here")',
+        ],
+        { timeout: 5000 }
+      ); // 5 seconds
 
-    if (joinButton) {
+      if (joinButton) {
 
-      // Send status that we're in the meeting
-      await this.config.sendStatusUpdate(
-        "in_meeting",
-        "Successfully joined the meeting",
-        { platform: this.config.platform, botName: this.config.botName }
-      );
-      await this.config.sendStatusUpdate(
-        "waiting_to_admit",
-        "Waiting to admit users into the meeting",
-        { platform: this.config.platform, botName: this.config.botName }
-      );
+        // Send status that we're in the meeting
+        await this.config.sendStatusUpdate(
+          "in_meeting",
+          "Successfully joined the meeting",
+          { platform: this.config.platform, botName: this.config.botName }
+        );
+        await this.config.sendStatusUpdate(
+          "waiting_to_admit",
+          "Waiting to admit users into the meeting",
+          { platform: this.config.platform, botName: this.config.botName }
+        );
 
-      // const buttonText = await joinButton.textContent().catch(() => "");
-      this.logger.info("Clicked join button", { buttonText });
-      // Store if we clicked "Ask to join" to detect waiting state later
+        // const buttonText = await joinButton.textContent().catch(() => "");
+        this.logger.info("Clicked join button", { buttonText: "" });
+        // Store if we clicked "Ask to join" to detect waiting state later
 
-      this.clickedAskToJoin = true;
-      return true;
-    } else {
-      this.clickedAskToJoin = false;
-      this.logger.info("Join button not found");
-      
-      // Take screenshot for debugging
-      await this.takeScreenshot("join_button_not_found");
-      
-      return false;
+        this.clickedAskToJoin = true;
+        return true;
+      } else {
+        this.clickedAskToJoin = false;
+        this.logger.info("Join button not found");
+        
+        // Take screenshot for debugging
+        await this.takeScreenshot("join_button_not_found");
+        
+        return false;
+      }
+    } catch (error) {
+      this.logger.error("Error in performJoin", { error: error.message, stack: error.stack });
+      // Don't throw - log and continue
     }
   }
 
   async ensureJoined() {
-    // Check if bot is organizer - if so, it should join directly without waiting
-    const isOrganizer = this.config.isOrganizer === true || this.config.isOrganizer === "true";
-    
-    // If bot clicked "Ask to join", it might need to wait for admission
-    if (this.clickedAskToJoin && !isOrganizer) {
-      this.logger.info("Bot clicked 'Ask to join' - checking if waiting for admission");
+    try {
+      // Check if bot is organizer - if so, it should join directly without waiting
+      const isOrganizer = this.config.isOrganizer === true || this.config.isOrganizer === "true";
       
-      // Look for waiting/admission indicators in Google Meet
-      const waitingSelectors = [
-        'text="Waiting to be let in"',
-        'text="Waiting for the host to let you in"',
-        'text="You\'re waiting to join"',
-        '[aria-label*="waiting"]',
-        '[aria-label*="Waiting"]',
-        '[data-message*="waiting" i]',
+      // If bot clicked "Ask to join", it might need to wait for admission
+      if (this.clickedAskToJoin && !isOrganizer) {
+        this.logger.info("Bot clicked 'Ask to join' - checking if waiting for admission");
+        
+        // Look for waiting/admission indicators in Google Meet
+        const waitingSelectors = [
+          'text="Waiting to be let in"',
+          'text="Waiting for the host to let you in"',
+          'text="You\'re waiting to join"',
+          '[aria-label*="waiting"]',
+          '[aria-label*="Waiting"]',
+          '[data-message*="waiting" i]',
+        ];
+
+        // Check if we're in waiting state
+        let isWaiting = false;
+        for (const selector of waitingSelectors) {
+          try {
+            const waitingElement = await this.page.locator(selector).first();
+            if (
+              await waitingElement.isVisible({ timeout: 5000 }).catch(() => false)
+            ) {
+              isWaiting = true;
+              this.logger.info("Detected waiting for admission state", { selector });
+              break;
+            }
+          } catch (e) {
+            // Continue checking other selectors
+          }
+        }
+
+        // If waiting for admission, send status and wait longer for admission
+        if (isWaiting && this.config.sendStatusUpdate) {
+          await this.config.sendStatusUpdate(
+            "waiting_for_host",
+            "Waiting to be admitted into the meeting",
+            { platform: this.config.platform }
+          );
+          
+          // Wait up to 2 minutes for admission (host needs time to admit)
+          this.logger.info("Waiting for host to admit bot (up to 2 minutes)");
+          try {
+            await this.page.waitForSelector('button[aria-label*="Leave call"]', {
+              timeout: 120000, // 2 minutes for admission
+            });
+            this.logger.info("Bot was admitted - Leave call button visible");
+            return; // Successfully joined
+          } catch (e) {
+            this.logger.warn("Timeout waiting for admission - bot may not have been admitted", {
+              error: e.message
+            });
+            // Continue to check if we're actually in the meeting anyway
+          }
+        }
+      }
+
+      // Try to find "Leave call" button with multiple selectors
+      const leaveButtonSelectors = [
+        'button[aria-label*="Leave call"]',
+        'button[aria-label*="Leave"]',
+        'button:has-text("Leave")',
+        '[data-mdc-dialog-action="close"]', // Sometimes shown as close button
       ];
 
-      // Check if we're in waiting state
-      let isWaiting = false;
-      for (const selector of waitingSelectors) {
+      let foundLeaveButton = false;
+      for (const selector of leaveButtonSelectors) {
         try {
-          const waitingElement = await this.page.locator(selector).first();
-          if (
-            await waitingElement.isVisible({ timeout: 5000 }).catch(() => false)
-          ) {
-            isWaiting = true;
-            this.logger.info("Detected waiting for admission state", { selector });
-            break;
-          }
+          await this.page.waitForSelector(selector, {
+            timeout: 2000,
+          });
+          this.logger.info("Meeting joined - Leave call button visible", { selector });
+          foundLeaveButton = true;
+          break;
         } catch (e) {
-          // Continue checking other selectors
+          // Try next selector
+          continue;
         }
       }
 
-      // If waiting for admission, send status and wait longer for admission
-      if (isWaiting && this.config.sendStatusUpdate) {
-        await this.config.sendStatusUpdate(
-          "waiting_for_host",
-          "Waiting to be admitted into the meeting",
-          { platform: this.config.platform }
-        );
-        
-        // Wait up to 2 minutes for admission (host needs time to admit)
-        this.logger.info("Waiting for host to admit bot (up to 2 minutes)");
-        try {
-          await this.page.waitForSelector('button[aria-label*="Leave call"]', {
-            timeout: 120000, // 2 minutes for admission
-          });
-          this.logger.info("Bot was admitted - Leave call button visible");
-          return; // Successfully joined
-        } catch (e) {
-          this.logger.warn("Timeout waiting for admission - bot may not have been admitted", {
-            error: e.message
-          });
-          // Continue to check if we're actually in the meeting anyway
-        }
+      if (!foundLeaveButton) {
+        // Last resort: check if we're actually in the meeting by looking for meeting UI elements
+        // const meetingIndicators = [
+        //   '[data-self-name]', // Self name indicator
+        //   'button[aria-label*="Turn off microphone"]',
+        //   'button[aria-label*="Turn on microphone"]',
+        //   'button[aria-label*="Turn off camera"]',
+        //   'button[aria-label*="Turn on camera"]',
+        // ];
+
+        // let foundIndicator = false;
+        // for (const indicator of meetingIndicators) {
+        //   try {
+        //     const element = await this.page.locator(indicator).first();
+        //     if (await element.isVisible({ timeout: 5000 }).catch(() => false)) {
+        //       this.logger.info("Meeting indicator found - assuming joined", { indicator });
+        //       foundIndicator = true;
+        //       break;
+        //     }
+        //   } catch (e) {
+        //     continue;
+        //   }
+        // }
+
+        // if (!foundIndicator) {
+        //   throw new Error('Could not confirm meeting join - Leave call button and meeting indicators not found');
+        // }
       }
-    }
-
-    // Try to find "Leave call" button with multiple selectors
-    const leaveButtonSelectors = [
-      'button[aria-label*="Leave call"]',
-      'button[aria-label*="Leave"]',
-      'button:has-text("Leave")',
-      '[data-mdc-dialog-action="close"]', // Sometimes shown as close button
-    ];
-
-    let foundLeaveButton = false;
-    for (const selector of leaveButtonSelectors) {
-      try {
-        await this.page.waitForSelector(selector, {
-          timeout: 2000,
-        });
-        this.logger.info("Meeting joined - Leave call button visible", { selector });
-        foundLeaveButton = true;
-        break;
-      } catch (e) {
-        // Try next selector
-        continue;
-      }
-    }
-
-    if (!foundLeaveButton) {
-      // Last resort: check if we're actually in the meeting by looking for meeting UI elements
-      // const meetingIndicators = [
-      //   '[data-self-name]', // Self name indicator
-      //   'button[aria-label*="Turn off microphone"]',
-      //   'button[aria-label*="Turn on microphone"]',
-      //   'button[aria-label*="Turn off camera"]',
-      //   'button[aria-label*="Turn on camera"]',
-      // ];
-
-      // let foundIndicator = false;
-      // for (const indicator of meetingIndicators) {
-      //   try {
-      //     const element = await this.page.locator(indicator).first();
-      //     if (await element.isVisible({ timeout: 5000 }).catch(() => false)) {
-      //       this.logger.info("Meeting indicator found - assuming joined", { indicator });
-      //       foundIndicator = true;
-      //       break;
-      //     }
-      //   } catch (e) {
-      //     continue;
-      //   }
-      // }
-
-      // if (!foundIndicator) {
-      //   throw new Error('Could not confirm meeting join - Leave call button and meeting indicators not found');
-      // }
+    } catch (error) {
+      this.logger.error("Error in ensureJoined", { error: error.message, stack: error.stack });
+      // Don't throw - log and continue
     }
   }
 
   async afterJoin() {
-    // Check if bot is organizer and has status update capability
-    const isOrganizer = this.config.isOrganizer === true || this.config.isOrganizer === "true";
-    if (isOrganizer && this.config.sendStatusUpdate) {
-      this.logger.info("Bot is organizer - setting up auto-admit functionality");
+    try {
+      // Prevent multiple calls to afterJoin from starting duplicate polling
+      if (this._admitAllPollingActive) {
+        this.logger.info("afterJoin: Polling already active, skipping duplicate setup");
+        return;
+      }
+      
+      // Check if bot is organizer and has status update capability
+      const isOrganizer = this.config.isOrganizer === true || this.config.isOrganizer === "true";
+      if (isOrganizer && this.config.sendStatusUpdate) {
+        this.logger.info("Bot is organizer - setting up auto-admit functionality");
 
-      // Open People panel in background (non-blocking)
-      this._openPeoplePanel().catch(err => {
-        this.logger.warn('Error opening People panel', { error: err.message });
-      });
+        // Open People panel in background (non-blocking)
+        this._openPeoplePanel().catch(err => {
+          this.logger.warn('Error opening People panel', { error: err.message });
+        });
 
-      // Start polling 2 seconds after joining (regardless of panel state)
-      // The polling function will handle retrying if panel isn't open yet
-      setTimeout(() => {
-        this.logger.info('Starting admit polling 2 seconds after join');
-        this._startAdmitAllPolling();
-      }, 2000);
-    } else {
-      this.logger.info(
-        "afterJoin skipped - bot is not organizer or status updates not available",
-        {
-          isOrganizer,
-          hasSendStatusUpdate: !!this.config.sendStatusUpdate,
-        }
-      );
+        // Start polling 2 seconds after joining (regardless of panel state)
+        // The polling function will handle retrying if panel isn't open yet
+        setTimeout(() => {
+          this.logger.info('Starting admit polling 2 seconds after join');
+          this._startAdmitAllPolling();
+        }, 2000);
+      } else {
+        this.logger.info(
+          "afterJoin skipped - bot is not organizer or status updates not available",
+          {
+            isOrganizer,
+            hasSendStatusUpdate: !!this.config.sendStatusUpdate,
+          }
+        );
+      }
+    } catch (error) {
+      this.logger.error("Error in afterJoin", { error: error.message, stack: error.stack });
+      // Don't throw - log and continue
     }
   }
 
@@ -283,6 +311,12 @@ class GoogleMeetController extends PlatformController {
   }
 
   _startAdmitAllPolling() {
+    // Prevent multiple polling instances from starting
+    if (this._admitAllPollingActive) {
+      this.logger.info('_startAdmitAllPolling: Polling already active, skipping duplicate start');
+      return;
+    }
+    
     // Non-blocking polling using recursive setTimeout to ensure sequential execution
     // Stops automatically after successfully admitting a user
     this.logger.info('_startAdmitAllPolling: Starting polling for "Admit all" button');
@@ -339,18 +373,29 @@ class GoogleMeetController extends PlatformController {
         
         if (foundButton) {
           this.logger.info('Clicking "Admit" button');
-          await foundButton.click();
           
-          // Wait a moment for the confirmation modal/dialog to appear
-          await this.page.waitForTimeout(500);
+          // Click the button and wait for modal
+          await foundButton.click({ force: true });
+          
+          // Wait longer for the confirmation modal/dialog to appear
+          await this.page.waitForTimeout(1000);
           
           // Wait for the confirmation modal/dialog to appear
           // Look for the dialog element first, then the button
           try {
-            // Wait for dialog to appear (MDC dialog)
-            await this.page.waitForSelector('[data-mdc-dialog-action="ok"]', { 
-              timeout: 3000 
+            // Wait for dialog to appear (MDC dialog) - give it more time
+            const dialogAppeared = await this.page.waitForSelector('[data-mdc-dialog-action="ok"]', { 
+              timeout: 5000 
             }).catch(() => null);
+            
+            if (!dialogAppeared) {
+              this.logger.warn('Confirmation dialog did not appear after clicking Admit button');
+              // Continue to next poll
+              if (this._admitAllPollingActive && !this._userAdmitted) {
+                this._admitAllTimeout = setTimeout(pollOnce, 3000);
+              }
+              return;
+            }
             
             // Look for the confirmation button in the modal with multiple selectors
             const confirmSelectors = [
@@ -358,28 +403,53 @@ class GoogleMeetController extends PlatformController {
               'button.mUIrbf-LgbsSe[data-mdc-dialog-action="ok"]',
               'button:has([jsname="V67aGc"]:has-text("Admit all"))',
               'button:has-text("Admit all")[data-mdc-dialog-action="ok"]',
+              'button:has-text("Admit")[data-mdc-dialog-action="ok"]',
             ];
             
             let confirmed = false;
             for (const selector of confirmSelectors) {
               try {
                 const confirmButton = await this.page.locator(selector).first();
-                if (await confirmButton.isVisible({ timeout: 1500 }).catch(() => false)) {
-                  this.logger.info('Found confirmation modal button - clicking to confirm');
-                  await confirmButton.click();
+                if (await confirmButton.isVisible({ timeout: 2000 }).catch(() => false)) {
+                  this.logger.info('Found confirmation modal button - clicking to confirm', { selector });
+                  
+                  // Click with force to ensure it works
+                  await confirmButton.click({ force: true });
                   confirmed = true;
                   
-                  // Wait a bit after confirmation for modal to close
-                  await this.page.waitForTimeout(1000);
+                  // Wait longer after confirmation for modal to close and user to be admitted
+                  await this.page.waitForTimeout(2000);
                   
-                  // Check if the "Admit" button is gone (indicating successful admission)
-                  // This confirms that a user was actually admitted
+                  // Verify admission by checking multiple indicators:
+                  // 1. "Admit" button is gone
+                  // 2. "Waiting to be let in" message is gone (if it existed)
+                  // 3. People panel shows the user as joined
                   const buttonStillExists = await this.page.locator(admitSelectors[0]).first()
                     .isVisible({ timeout: 1000 })
                     .catch(() => false);
                   
-                  if (!buttonStillExists) {
-                    this.logger.info('✅ "Admit" button disappeared - user has been admitted successfully');
+                  // Check if waiting message is gone
+                  const waitingSelectors = [
+                    'text="Waiting to be let in"',
+                    'text="Waiting for the host to let you in"',
+                    'text="You\'re waiting to join"',
+                  ];
+                  let waitingMessageExists = false;
+                  for (const waitSelector of waitingSelectors) {
+                    try {
+                      const waitingEl = await this.page.locator(waitSelector).first();
+                      if (await waitingEl.isVisible({ timeout: 500 }).catch(() => false)) {
+                        waitingMessageExists = true;
+                        break;
+                      }
+                    } catch (e) {
+                      // Continue checking
+                    }
+                  }
+                  
+                  // If button is gone AND waiting message is gone, user was admitted
+                  if (!buttonStillExists && !waitingMessageExists) {
+                    this.logger.info('✅ User has been admitted successfully (Admit button gone and no waiting message)');
                     this._userAdmitted = true;
                     
                     if (this.config.sendStatusUpdate) {
@@ -403,7 +473,27 @@ class GoogleMeetController extends PlatformController {
                     }
                     return; // Exit polling loop
                   } else {
-                    this.logger.info('"Admit" button still visible - may need to admit more users');
+                    this.logger.warn('Admission not confirmed', {
+                      buttonStillExists,
+                      waitingMessageExists,
+                      mayNeedRetry: true
+                    });
+                    // Button might have disappeared temporarily, wait and check again
+                    await this.page.waitForTimeout(1000);
+                    const buttonStillExistsAfterWait = await this.page.locator(admitSelectors[0]).first()
+                      .isVisible({ timeout: 1000 })
+                      .catch(() => false);
+                    
+                    if (!buttonStillExistsAfterWait && !waitingMessageExists) {
+                      this.logger.info('✅ User admitted (confirmed after wait)');
+                      this._userAdmitted = true;
+                      this._admitAllPollingActive = false;
+                      if (this._admitAllTimeout) {
+                        clearTimeout(this._admitAllTimeout);
+                        this._admitAllTimeout = null;
+                      }
+                      return;
+                    }
                   }
                   
                   break;
@@ -415,11 +505,12 @@ class GoogleMeetController extends PlatformController {
             }
             
             if (!confirmed) {
-              this.logger.info('Confirmation modal button not found - modal may have auto-closed or not appeared');
+              this.logger.warn('Confirmation modal button not found - modal may have auto-closed or not appeared');
             }
           } catch (e) {
-            this.logger.info('Error waiting for/clicking confirmation modal', {
-              error: e.message
+            this.logger.warn('Error waiting for/clicking confirmation modal', {
+              error: e.message,
+              stack: e.stack
             });
           }
         } else {
@@ -474,25 +565,30 @@ class GoogleMeetController extends PlatformController {
   }
 
   async cleanup() {
-    // Stop the admit all polling if it's running
-    this.logger.info('Stopping admit all polling');
-    this._admitAllPollingActive = false;
-    
-    // Clear timeout (using setTimeout instead of setInterval)
-    if (this._admitAllTimeout) {
-      clearTimeout(this._admitAllTimeout);
-      this._admitAllTimeout = null;
-    }
-    
-    // Legacy: Clear interval if it exists (for backward compatibility)
-    if (this._admitAllInterval) {
-      clearInterval(this._admitAllInterval);
-      this._admitAllInterval = null;
-    }
-    
-    // Check if page is closed
-    if (this.page && this.page.isClosed()) {
-      this.logger.info('Polling stopped - page is closed');
+    try {
+      // Stop the admit all polling if it's running
+      this.logger.info('Stopping admit all polling');
+      this._admitAllPollingActive = false;
+      
+      // Clear timeout (using setTimeout instead of setInterval)
+      if (this._admitAllTimeout) {
+        clearTimeout(this._admitAllTimeout);
+        this._admitAllTimeout = null;
+      }
+      
+      // Legacy: Clear interval if it exists (for backward compatibility)
+      if (this._admitAllInterval) {
+        clearInterval(this._admitAllInterval);
+        this._admitAllInterval = null;
+      }
+      
+      // Check if page is closed
+      if (this.page && this.page.isClosed()) {
+        this.logger.info('Polling stopped - page is closed');
+      }
+    } catch (error) {
+      this.logger.error("Error in cleanup", { error: error.message, stack: error.stack });
+      // Don't throw - log and continue (cleanup should never throw)
     }
   }
 }
