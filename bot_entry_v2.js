@@ -45,6 +45,7 @@ const config = {
   ),
   logLevel: (process.env.LOG_LEVEL || "info").toLowerCase(),
   sessionId: process.env.SESSION_ID || uuidv4(),
+  meetingId: process.env.MEETING_ID || process.env.SESSION_ID || uuidv4(), // Use MEETING_ID if available, fallback to SESSION_ID
   apiBaseUrl: process.env.API_BASE_URL,
   isOrganizer: parseBoolean(process.env.IS_ORGANIZER, false),
   openaiApiKey: process.env.OPENAI_API_KEY,
@@ -125,32 +126,61 @@ const DEFAULT_BROWSER_ARGS = [
 ];
 
 class StructuredLogger {
-  constructor(level = "info", context = {}) {
+  constructor(level = "info", context = {}, logFileStream = null) {
     this.level = level;
     this.context = context;
+    this.logFileStream = logFileStream;
   }
 
   child(extra = {}) {
-    return new StructuredLogger(this.level, { ...this.context, ...extra });
+    return new StructuredLogger(this.level, { ...this.context, ...extra }, this.logFileStream);
+  }
+
+  _writeToFile(level, message, meta = {}) {
+    if (!this.logFileStream) return;
+    
+    try {
+      const timestamp = new Date().toISOString();
+      const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
+      const logLine = `[${timestamp}] [${level}] ${message}${metaStr}\n`;
+      this.logFileStream.write(logLine);
+    } catch (error) {
+      // Silently fail if file write fails to avoid breaking the bot
+      console.log(`[WARN] Failed to write to log file: ${error.message}`);
+    }
   }
 
   info(message, meta = {}) {
     console.log(`[INFO] ${message}`, Object.keys(meta).length ? meta : "");
+    this._writeToFile("INFO", message, meta);
   }
 
   warn(message, meta = {}) {
     // Use console.log instead of console.warn to avoid stderr (PowerShell treats stderr as exceptions)
     console.log(`[WARN] ${message}`, Object.keys(meta).length ? meta : "");
+    this._writeToFile("WARN", message, meta);
   }
 
   error(message, meta = {}) {
     // Use console.log instead of console.error to avoid stderr (PowerShell treats stderr as exceptions)
     console.log(`[ERROR] ${message}`, Object.keys(meta).length ? meta : "");
+    this._writeToFile("ERROR", message, meta);
   }
 
   debug(message, meta = {}) {
     if (config.logLevel === "debug") {
       console.log(`[DEBUG] ${message}`, Object.keys(meta).length ? meta : "");
+      this._writeToFile("DEBUG", message, meta);
+    }
+  }
+
+  close() {
+    if (this.logFileStream) {
+      try {
+        this.logFileStream.end();
+      } catch (error) {
+        console.log(`[WARN] Failed to close log file: ${error.message}`);
+      }
     }
   }
 }
@@ -158,9 +188,15 @@ class StructuredLogger {
 class BrowserBot {
   constructor(botConfig) {
     this.config = botConfig;
+    
+    // Setup file-based logging
+    this.logFileStream = null;
+    this.logFilePath = null;
+    this._setupLogFile();
+    
     this.logger = new StructuredLogger(botConfig.logLevel, {
       platform: botConfig.platform,
-    });
+    }, this.logFileStream);
 
     this.browser = null;
     this.context = null;
@@ -530,9 +566,15 @@ class BrowserBot {
 
     this.browser = await chromium.launch(launchOptions);
     
+    // Verify browser instance is unique (for debugging isolation issues)
+    // Note: Playwright doesn't expose process() directly, but each browser instance is unique
+    const browserGuid = this.browser._guid || 'unknown';
     this.logger.info("Browser launched", {
       headless: this.config.headless,
       engine: this.config.browserEngine,
+      browserGuid: browserGuid,
+      sessionId: this.config.sessionId.substring(0, 8),
+      meetingId: this.config.meetingId?.substring(0, 8) || 'N/A',
     });
 
     this.sendStatusUpdate(
@@ -568,6 +610,14 @@ class BrowserBot {
     this.logger.info("Finished Google Meet auth state check (after)", { sessionId: this.config.sessionId });
 
     this.context = await this.browser.newContext(contextOptions);
+    
+    // Verify context isolation (for debugging)
+    const contextId = this.context._guid || 'unknown';
+    this.logger.debug("Browser context created", {
+      contextId: contextId,
+      sessionId: this.config.sessionId.substring(0, 8),
+      meetingId: this.config.meetingId?.substring(0, 8) || 'N/A',
+    });
 
     const origin = getPlatformPermissionsOrigin(
       this.config.platform,
@@ -588,6 +638,15 @@ class BrowserBot {
     }
 
     this.page = await this.context.newPage();
+    
+    // Verify page isolation (for debugging)
+    const pageId = this.page._guid || 'unknown';
+    this.logger.debug("Page created", {
+      pageId: pageId,
+      contextId: this.context._guid || 'unknown',
+      sessionId: this.config.sessionId.substring(0, 8),
+      meetingId: this.config.meetingId?.substring(0, 8) || 'N/A',
+    });
     
     // Set realistic User-Agent header for better compatibility (unique per sessionId)
     await this.page.setExtraHTTPHeaders({
@@ -915,8 +974,6 @@ class BrowserBot {
             this.logger.warn("Login timeout - please check browser");
           });
 
-        // Save auth state after successful login
-        await this.saveAuthState();
       }
     }
   }
@@ -2867,17 +2924,36 @@ class BrowserBot {
     this.logger.info("Virtual microphone ready", virtualMicStatus);
   }
 
-  async saveAuthState() {
-    if (this.config.platform === "google_meet") {
-      try {
-        // Save auth state to shared file across all browser instances
-        const authStatePath = path.resolve(__dirname, "google_auth_state.json");
-        await this.context.storageState({ path: authStatePath });
-        this.logger.info("Google auth state saved", { authStatePath, sessionId: this.config.sessionId });
-      } catch (error) {
-        // Silently fail - auth state save is not critical
-        this.logger.warn("Failed to save Google auth state", { error: error.message });
+ 
+
+  _setupLogFile() {
+    try {
+      // Create logs directory if it doesn't exist
+      const logsDir = path.resolve(__dirname, "logs");
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
       }
+
+      // Generate log filename: YYYY-MM-DD_HH-MM-SS_meetingId.log
+      const now = new Date();
+      const dateStr = now.toISOString().replace(/T/, '_').replace(/:/g, '-').substring(0, 19); // YYYY-MM-DD_HH-MM-SS
+      const meetingId = this.config.meetingId || this.config.sessionId || 'unknown';
+      // Sanitize meetingId for filename (remove invalid characters, but keep full length)
+      const sanitizedMeetingId = meetingId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = `${dateStr}_${sanitizedMeetingId}.log`;
+      this.logFilePath = path.join(logsDir, filename);
+
+      // Create write stream (append mode)
+      this.logFileStream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+      
+      // Write initial log entry
+      const initLog = `[${now.toISOString()}] [INFO] Log file created for meeting: ${this.config.meetingId || this.config.sessionId}\n`;
+      this.logFileStream.write(initLog);
+      
+      console.log(`[INFO] Logging to file: ${this.logFilePath}`);
+    } catch (error) {
+      console.log(`[WARN] Failed to setup log file: ${error.message}`);
+      this.logFileStream = null;
     }
   }
 
@@ -2920,13 +2996,24 @@ class BrowserBot {
       this.audioSearchInterval = null;
     }
 
-    // Close CDP client if it exists
+    // Detach CDP client if it exists
     if (this.cdpClient) {
       try {
-        await this.cdpClient.close();
+        // Playwright CDP sessions use detach() not close()
+        if (typeof this.cdpClient.detach === 'function') {
+          await this.cdpClient.detach();
+        } else if (typeof this.cdpClient.close === 'function') {
+          await this.cdpClient.close();
+        } else {
+          // If neither method exists, just nullify the reference
+          // The CDP session will be cleaned up when the page/context closes
+          this.logger.debug("CDP client has no detach/close method, will be cleaned up with page/context");
+        }
         this.cdpClient = null;
       } catch (error) {
-        this.logger.warn("Error closing CDP client", { error: error.message });
+        this.logger.warn("Error detaching CDP client", { error: error.message });
+        // Still nullify even if detach fails
+        this.cdpClient = null;
       }
     }
 
@@ -2993,6 +3080,18 @@ class BrowserBot {
         await this.browser.close();
       } catch (error) {
         this.logger.warn("Error closing browser", { error: error.message });
+      }
+    }
+
+    // Close log file stream
+    if (this.logFileStream) {
+      try {
+        const closeLog = `[${new Date().toISOString()}] [INFO] Bot cleanup completed, closing log file\n`;
+        this.logFileStream.write(closeLog);
+        this.logFileStream.end();
+        this.logger.info("Log file closed", { logFilePath: this.logFilePath });
+      } catch (error) {
+        console.log(`[WARN] Failed to close log file: ${error.message}`);
       }
     }
   }
