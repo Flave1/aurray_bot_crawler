@@ -247,24 +247,17 @@ class GoogleMeetController extends PlatformController {
       if (isOrganizer && this.config.sendStatusUpdate) {
         this.logger.info("Bot is organizer - setting up auto-admit functionality");
 
-        // Wait for People panel to open before starting polling
-        // This ensures the panel is ready when we start looking for the Admit button
-        try {
-          const panelOpened = await this._openPeoplePanel();
-          if (panelOpened) {
-            this.logger.info('People panel opened successfully, starting admit polling immediately');
-            // Start polling immediately since panel is already open
-            this._startAdmitAllPolling();
-          } else {
-            this.logger.warn('People panel did not open, will retry in polling function');
-            // Start polling anyway - it will retry opening the panel
-            this._startAdmitAllPolling();
-          }
-        } catch (err) {
-          this.logger.error('Error opening People panel, will retry in polling', { error: err.message, stack: err.stack });
-          // Start polling anyway - it will retry opening the panel
+        // Open People panel in background (non-blocking)
+        this._openPeoplePanel().catch(err => {
+          this.logger.warn('Error opening People panel', { error: err.message });
+        });
+
+        // Start polling 2 seconds after joining (regardless of panel state)
+        // The polling function will handle retrying if panel isn't open yet
+        setTimeout(() => {
+          this.logger.info('Starting admit polling 2 seconds after join');
           this._startAdmitAllPolling();
-        }
+        }, 2000);
       } else {
         this.logger.info(
           "afterJoin skipped - bot is not organizer or status updates not available",
@@ -317,19 +310,6 @@ class GoogleMeetController extends PlatformController {
     }
   }
 
-  async _isPeoplePanelOpen() {
-    try {
-      const peopleButton = await this.page.locator('button[aria-label^="People -"][aria-label*="joined"]').first();
-      if (await peopleButton.isVisible({ timeout: 1000 }).catch(() => false)) {
-        const isExpanded = await peopleButton.getAttribute('aria-expanded');
-        return isExpanded === 'true';
-      }
-      return false;
-    } catch (e) {
-      return false;
-    }
-  }
-
   _startAdmitAllPolling() {
     // Prevent multiple polling instances from starting
     if (this._admitAllPollingActive) {
@@ -366,27 +346,9 @@ class GoogleMeetController extends PlatformController {
       }
       
       this._admitAllPollCount++;
+      this.logger.info(`Polling for "Admit all" button (attempt ${this._admitAllPollCount})`);
       
       try {
-        // First, check if People panel is open - if not, try to open it
-        const isPanelOpen = await this._isPeoplePanelOpen();
-        if (!isPanelOpen) {
-          this.logger.info(`People panel not open (attempt ${this._admitAllPollCount}), attempting to open...`);
-          const panelOpened = await this._openPeoplePanel().catch(() => false);
-          if (!panelOpened) {
-            // Panel still not open, wait a bit and retry
-            this.logger.info('People panel still not open, will retry in next poll');
-            if (this._admitAllPollingActive && !this._userAdmitted) {
-              this._admitAllTimeout = setTimeout(pollOnce, 2000); // Retry in 2 seconds
-            }
-            return;
-          }
-          // Panel opened, wait a moment for it to fully render
-          await this.page.waitForTimeout(500);
-        }
-        
-        this.logger.info(`Polling for "Admit all" button (attempt ${this._admitAllPollCount})`);
-        
         // Try multiple selectors for the "Admit all" button
         const admitSelectors = [
           'button:has-text("Admit")',
@@ -552,7 +514,7 @@ class GoogleMeetController extends PlatformController {
             });
           }
         } else {
-          this.logger.info('"Admit" button not found yet - will retry in 3 seconds');
+          this.logger.info('"Admit" button not found yet - will retry in 5 seconds');
         }
       } catch (e) {
         this.logger.warn('Error checking/clicking "Admit all" button', {
@@ -562,9 +524,8 @@ class GoogleMeetController extends PlatformController {
       }
       
       // Schedule next poll only if polling is still active and user hasn't been admitted
-      // Reduced interval to 3 seconds for faster response
       if (this._admitAllPollingActive && !this._userAdmitted) {
-        this._admitAllTimeout = setTimeout(pollOnce, 3000);
+        this._admitAllTimeout = setTimeout(pollOnce, 5000);
       }
     };
     
@@ -575,12 +536,12 @@ class GoogleMeetController extends PlatformController {
         this.logger.warn('Error in polling', { error: err.message });
         // Schedule next poll even if there was an error (unless polling was stopped)
         if (this._admitAllPollingActive && !this._userAdmitted) {
-          this._admitAllTimeout = setTimeout(pollOnce, 3000);
+          this._admitAllTimeout = setTimeout(pollOnce, 5000);
         }
       });
     }, 0);
     
-    this.logger.info('_startAdmitAllPolling: Polling started (non-blocking), will poll every 3 seconds until user is admitted');
+    this.logger.info('_startAdmitAllPolling: Polling started (non-blocking), will poll every 5 seconds until user is admitted');
   }
 
   async hasBotJoined() {
